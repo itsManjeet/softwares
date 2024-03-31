@@ -49,13 +49,10 @@ typedef struct
 	GHashTable		*cache;
 	GMutex			 cache_mutex;
 	GModule			*module;
-	GsPluginFlags		 flags;
 	GPtrArray		*rules[GS_PLUGIN_RULE_LAST];
 	GHashTable		*vfuncs;		/* string:pointer */
 	GMutex			 vfuncs_mutex;
 	gboolean		 enabled;
-	guint			 interactive_cnt;
-	GMutex			 interactive_mutex;
 	gchar			*language;		/* allow-none */
 	gchar			*name;
 	gchar			*appstream_id;
@@ -75,8 +72,7 @@ G_DEFINE_ABSTRACT_TYPE_WITH_PRIVATE (GsPlugin, gs_plugin, G_TYPE_OBJECT)
 G_DEFINE_QUARK (gs-plugin-error-quark, gs_plugin_error)
 
 typedef enum {
-	PROP_FLAGS = 1,
-	PROP_SESSION_BUS_CONNECTION,
+	PROP_SESSION_BUS_CONNECTION = 1,
 	PROP_SYSTEM_BUS_CONNECTION,
 } GsPluginProperty;
 
@@ -255,7 +251,6 @@ gs_plugin_finalize (GObject *object)
 	g_hash_table_unref (priv->cache);
 	g_hash_table_unref (priv->vfuncs);
 	g_mutex_clear (&priv->cache_mutex);
-	g_mutex_clear (&priv->interactive_mutex);
 	g_mutex_clear (&priv->timer_mutex);
 	g_mutex_clear (&priv->vfuncs_mutex);
 	if (priv->module != NULL)
@@ -332,26 +327,6 @@ gs_plugin_set_enabled (GsPlugin *plugin, gboolean enabled)
 {
 	GsPluginPrivate *priv = gs_plugin_get_instance_private (plugin);
 	priv->enabled = enabled;
-}
-
-void
-gs_plugin_interactive_inc (GsPlugin *plugin)
-{
-	GsPluginPrivate *priv = gs_plugin_get_instance_private (plugin);
-	g_autoptr(GMutexLocker) locker = g_mutex_locker_new (&priv->interactive_mutex);
-	priv->interactive_cnt++;
-	gs_plugin_add_flags (plugin, GS_PLUGIN_FLAGS_INTERACTIVE);
-}
-
-void
-gs_plugin_interactive_dec (GsPlugin *plugin)
-{
-	GsPluginPrivate *priv = gs_plugin_get_instance_private (plugin);
-	g_autoptr(GMutexLocker) locker = g_mutex_locker_new (&priv->interactive_mutex);
-	if (priv->interactive_cnt > 0)
-		priv->interactive_cnt--;
-	if (priv->interactive_cnt == 0)
-		gs_plugin_remove_flags (plugin, GS_PLUGIN_FLAGS_INTERACTIVE);
 }
 
 /**
@@ -584,58 +559,6 @@ gs_plugin_get_network_available (GsPlugin *plugin)
 }
 
 /**
- * gs_plugin_has_flags:
- * @plugin: a #GsPlugin
- * @flags: a #GsPluginFlags, e.g. %GS_PLUGIN_FLAGS_INTERACTIVE
- *
- * Finds out if a plugin has a specific flag set.
- *
- * Returns: TRUE if the flag is set
- *
- * Since: 3.22
- **/
-gboolean
-gs_plugin_has_flags (GsPlugin *plugin, GsPluginFlags flags)
-{
-	GsPluginPrivate *priv = gs_plugin_get_instance_private (plugin);
-	return (priv->flags & flags) > 0;
-}
-
-/**
- * gs_plugin_add_flags:
- * @plugin: a #GsPlugin
- * @flags: a #GsPluginFlags, e.g. %GS_PLUGIN_FLAGS_INTERACTIVE
- *
- * Adds specific flags to the plugin.
- *
- * Since: 3.22
- **/
-void
-gs_plugin_add_flags (GsPlugin *plugin, GsPluginFlags flags)
-{
-	GsPluginPrivate *priv = gs_plugin_get_instance_private (plugin);
-	priv->flags |= flags;
-	g_object_notify_by_pspec (G_OBJECT (plugin), obj_props[PROP_FLAGS]);
-}
-
-/**
- * gs_plugin_remove_flags:
- * @plugin: a #GsPlugin
- * @flags: a #GsPluginFlags, e.g. %GS_PLUGIN_FLAGS_INTERACTIVE
- *
- * Removes specific flags from the plugin.
- *
- * Since: 3.22
- **/
-void
-gs_plugin_remove_flags (GsPlugin *plugin, GsPluginFlags flags)
-{
-	GsPluginPrivate *priv = gs_plugin_get_instance_private (plugin);
-	priv->flags &= ~flags;
-	g_object_notify_by_pspec (G_OBJECT (plugin), obj_props[PROP_FLAGS]);
-}
-
-/**
  * gs_plugin_add_rule:
  * @plugin: a #GsPlugin
  * @rule: a #GsPluginRule, e.g. %GS_PLUGIN_RULE_CONFLICTS
@@ -673,6 +596,38 @@ gs_plugin_get_rules (GsPlugin *plugin, GsPluginRule rule)
 {
 	GsPluginPrivate *priv = gs_plugin_get_instance_private (plugin);
 	return priv->rules[rule];
+}
+
+/**
+ * gs_plugin_adopt_app:
+ * @plugin: a #GsPlugin
+ * @app: a #GsApp
+ *
+ * Called when the @app has not been claimed (i.e. a management plugin has not
+ * been set), using GsPluginClass.adopt_app() if set. This does nothing, when
+ * the @plugin does not implement the function.
+ *
+ * A claimed app means other plugins will not try to perform actions
+ * such as install, remove or update. Most apps are claimed when they
+ * are created.
+ *
+ * If a plugin can adopt this app then it should call
+ * gs_app_set_management_plugin() on @app.
+ *
+ * Since: 47
+ **/
+void
+gs_plugin_adopt_app (GsPlugin *plugin,
+		     GsApp *app)
+{
+	GsPluginClass *plugin_class;
+
+	g_return_if_fail (GS_IS_PLUGIN (plugin));
+	g_return_if_fail (GS_IS_APP (app));
+
+	plugin_class = GS_PLUGIN_GET_CLASS (plugin);
+	if (plugin_class->adopt_app != NULL)
+		plugin_class->adopt_app (plugin, app);
 }
 
 /**
@@ -831,65 +786,126 @@ gs_plugin_basic_auth_start (GsPlugin *plugin,
 	g_source_attach (idle_source, NULL);
 }
 
-static gboolean
-gs_plugin_app_launch_cb (gpointer user_data)
+static const gchar *
+get_desktop_id_to_launch (GsApp *app)
 {
-	GAppInfo *appinfo = (GAppInfo *) user_data;
+	const gchar *desktop_id = gs_app_get_launchable (app, AS_LAUNCHABLE_KIND_DESKTOP_ID);
+	if (desktop_id == NULL)
+		desktop_id = gs_app_get_id (app);
+	return desktop_id;
+}
+
+static gboolean
+launch_app_info (GAppInfo *appinfo,
+		 GError **error)
+{
 	GdkDisplay *display;
 	g_autoptr(GAppLaunchContext) context = NULL;
-	g_autoptr(GError) error = NULL;
+
+	if (appinfo == NULL)
+		return TRUE;
 
 	display = gdk_display_get_default ();
 	context = G_APP_LAUNCH_CONTEXT (gdk_display_get_app_launch_context (display));
-	if (!g_app_info_launch (appinfo, NULL, context, &error))
-		g_warning ("Failed to launch: %s", error->message);
 
-	return G_SOURCE_REMOVE;
+	return g_app_info_launch (appinfo, NULL, context, error);
 }
 
 /**
- * gs_plugin_app_launch:
+ * gs_plugin_app_launch_async:
  * @plugin: a #GsPlugin
  * @app: a #GsApp
- * @error: a #GError, or %NULL
+ * @flags: a bit-or of #GsPluginLaunchFlags
+ * @cancellable: a #GCancellable, or %NULL
+ * @callback: (not nullable): a #GAsyncReadyCallback to call when the request is satisfied
+ * @user_data: (closure callback) (scope async): data to pass to @callback
  *
- * Launches the application using #GAppInfo.
+ * Asynchronously launches the application using #GAppInfo.
+ * Finish the call with gs_plugin_app_launch_finish().
  *
- * Returns: %TRUE for success
+ * The function also verifies whether the @plugin can handle the @app,
+ * in a sense of gs_app_has_management_plugin(), and if not then does
+ * nothing.
  *
- * Since: 3.22
+ * Since: 47
  **/
-gboolean
-gs_plugin_app_launch (GsPlugin *plugin, GsApp *app, GError **error)
+void
+gs_plugin_app_launch_async (GsPlugin *plugin,
+			    GsApp *app,
+			    GsPluginLaunchFlags flags,
+			    GCancellable *cancellable,
+			    GAsyncReadyCallback callback,
+			    gpointer user_data)
 {
 	const gchar *desktop_id;
+	g_autoptr(GTask) task = NULL;
 	g_autoptr(GAppInfo) appinfo = NULL;
 
-	desktop_id = gs_app_get_launchable (app, AS_LAUNCHABLE_KIND_DESKTOP_ID);
-	if (desktop_id == NULL)
-		desktop_id = gs_app_get_id (app);
+	g_return_if_fail (GS_IS_PLUGIN (plugin));
+	g_return_if_fail (GS_IS_APP (app));
+	g_return_if_fail (callback != NULL);
+
+	task = g_task_new (plugin, cancellable, callback, user_data);
+	g_task_set_source_tag (task, gs_plugin_app_launch_async);
+
+	/* only process this app if was created by this plugin */
+	if (!gs_app_has_management_plugin (app, plugin)) {
+		g_task_return_pointer (task, NULL, NULL);
+		return;
+	}
+
+	desktop_id = get_desktop_id_to_launch (app);
 	if (desktop_id == NULL) {
-		g_set_error (error,
-			     GS_PLUGIN_ERROR,
+		g_task_return_new_error (task, GS_PLUGIN_ERROR,
 			     GS_PLUGIN_ERROR_NOT_SUPPORTED,
-			     "no such desktop file: %s",
-			     desktop_id);
-		return FALSE;
+			     "no desktop file for app: %s",
+			     gs_app_get_name (app));
+		return;
 	}
 	appinfo = G_APP_INFO (gs_utils_get_desktop_app_info (desktop_id));
 	if (appinfo == NULL) {
-		g_set_error (error,
-			     GS_PLUGIN_ERROR,
+		g_task_return_new_error (task, GS_PLUGIN_ERROR,
 			     GS_PLUGIN_ERROR_NOT_SUPPORTED,
 			     "no such desktop file: %s",
 			     desktop_id);
+		return;
+	}
+
+	/* the actual launch happens in the _finish() function,
+	   which should be in the main thread */
+	g_task_return_pointer (task, g_steal_pointer (&appinfo), g_object_unref);
+}
+
+/**
+ * gs_plugin_app_launch_finish:
+ * @plugin: a #GsPlugin
+ * @result: an async result
+ * @error: a #GError or %NULL
+ *
+ * Finishes operation started by gs_plugin_app_launch_async().
+ * This function should be called from the main thread.
+ *
+ * Returns: whether succeeded
+ *
+ * Since: 47
+ **/
+gboolean
+gs_plugin_app_launch_finish (GsPlugin *plugin,
+			     GAsyncResult *result,
+			     GError **error)
+{
+	g_autoptr(GAppInfo) appinfo = NULL;
+	g_autoptr(GError) local_error = NULL;
+
+	g_return_val_if_fail (g_task_is_valid (G_TASK (result), plugin), FALSE);
+	g_return_val_if_fail (g_async_result_is_tagged (result, gs_plugin_app_launch_async), FALSE);
+
+	appinfo = g_task_propagate_pointer (G_TASK (result), &local_error);
+	if (local_error != NULL) {
+		g_propagate_error (error, local_error);
 		return FALSE;
 	}
-	g_idle_add_full (G_PRIORITY_DEFAULT,
-			 gs_plugin_app_launch_cb,
-			 g_object_ref (appinfo),
-			 (GDestroyNotify) g_object_unref);
-	return TRUE;
+	return launch_app_info (appinfo, error);
 }
 
 static GDesktopAppInfo *
@@ -908,7 +924,7 @@ check_directory_for_desktop_file (GsPlugin *plugin,
 	key_file = g_key_file_new ();
 
 	found = g_key_file_load_from_file (key_file, filename, G_KEY_FILE_KEEP_TRANSLATIONS, NULL);
-	if (found && cb (plugin, app, filename, key_file)) {
+	if (found && cb (plugin, app, filename, key_file, user_data)) {
 		g_autoptr(GDesktopAppInfo) appinfo = NULL;
 		g_debug ("Found '%s' for app '%s' and picked it", filename, desktop_id);
 		/* use the filename, not the key_file, to enable bus activation from the .desktop file */
@@ -925,7 +941,7 @@ check_directory_for_desktop_file (GsPlugin *plugin,
 	if (!g_str_has_suffix (desktop_id, ".desktop")) {
 		g_autofree gchar *desktop_filename = g_strconcat (filename, ".desktop", NULL);
 		found = g_key_file_load_from_file (key_file, desktop_filename, G_KEY_FILE_KEEP_TRANSLATIONS, NULL);
-		if (found && cb (plugin, app, desktop_filename, key_file)) {
+		if (found && cb (plugin, app, desktop_filename, key_file, user_data)) {
 			g_autoptr(GDesktopAppInfo) appinfo = NULL;
 			g_debug ("Found '%s' for app '%s' and picked it", desktop_filename, desktop_id);
 			/* use the filename, not the key_file, to enable bus activation from the .desktop file */
@@ -945,63 +961,53 @@ check_directory_for_desktop_file (GsPlugin *plugin,
 	return NULL;
 }
 
-/**
- * gs_plugin_app_launch_filtered:
- * @plugin: a #GsPlugin
- * @app: a #GsApp to launch
- * @cb: a callback to pick the correct .desktop file
- * @user_data: (closure cb) (scope call): user data for the @cb
- * @error: a #GError, or %NULL
- *
- * Launches application @app, using the .desktop file picked by the @cb.
- * This can help in case multiple versions of the @app are installed
- * in the system (like a Flatpak and RPM versions).
- *
- * Returns: %TRUE on success
- *
- * Since: 43
- **/
-gboolean
-gs_plugin_app_launch_filtered (GsPlugin *plugin,
-			       GsApp *app,
-			       GsPluginPickDesktopFileCallback cb,
-			       gpointer user_data,
-			       GError **error)
+typedef struct {
+	GsApp *app; /* (owned) */
+	GsPluginPickDesktopFileCallback cb;
+	gpointer cb_user_data;
+	GAppInfo *appinfo; /* (owned) (nullable) (out) */
+} LaunchFilteredData;
+
+static void
+launch_filtered_data_free (LaunchFilteredData *data)
 {
-	const gchar *desktop_id;
+	g_clear_object (&data->app);
+	g_clear_object (&data->appinfo);
+	g_free (data);
+}
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC (LaunchFilteredData, launch_filtered_data_free)
+
+static void
+launch_filtered_thread (GTask *task,
+			gpointer source_object,
+			gpointer task_data,
+			GCancellable *cancellable)
+{
 	g_autoptr(GDesktopAppInfo) appinfo = NULL;
+	GsPlugin *plugin = GS_PLUGIN (source_object);
+	LaunchFilteredData *data = task_data;
+	const gchar *desktop_id;
 
-	g_return_val_if_fail (GS_IS_PLUGIN (plugin), FALSE);
-	g_return_val_if_fail (GS_IS_APP (app), FALSE);
-	g_return_val_if_fail (cb != NULL, FALSE);
-
-	desktop_id = gs_app_get_launchable (app, AS_LAUNCHABLE_KIND_DESKTOP_ID);
-	if (desktop_id == NULL)
-		desktop_id = gs_app_get_id (app);
-	if (desktop_id == NULL) {
-		g_set_error (error,
-			     GS_PLUGIN_ERROR,
-			     GS_PLUGIN_ERROR_NOT_SUPPORTED,
-			     "no desktop file for app: %s",
-			     gs_app_get_name (app));
-		return FALSE;
-	}
+	desktop_id = get_desktop_id_to_launch (data->app);
+	/* the caller verified it's set */
+	g_assert (desktop_id != NULL);
 
 	/* First, the configs.  Highest priority: the user's ~/.config */
-	appinfo = check_directory_for_desktop_file (plugin, app, cb, user_data, desktop_id, g_get_user_config_dir ());
+	appinfo = check_directory_for_desktop_file (plugin, data->app, data->cb, data->cb_user_data, desktop_id, g_get_user_config_dir ());
 
 	if (appinfo == NULL) {
 		/* Next, the system configs (/etc/xdg, and so on). */
 		const gchar * const *dirs;
 		dirs = g_get_system_config_dirs ();
 		for (guint i = 0; dirs[i] && appinfo == NULL; i++) {
-			appinfo = check_directory_for_desktop_file (plugin, app, cb, user_data, desktop_id, dirs[i]);
+			appinfo = check_directory_for_desktop_file (plugin, data->app, data->cb, data->cb_user_data, desktop_id, dirs[i]);
 		}
 	}
 
 	if (appinfo == NULL) {
 		/* Now the data.  Highest priority: the user's ~/.local/share/applications */
-		appinfo = check_directory_for_desktop_file (plugin, app, cb, user_data, desktop_id, g_get_user_data_dir ());
+		appinfo = check_directory_for_desktop_file (plugin, data->app, data->cb, data->cb_user_data, desktop_id, g_get_user_data_dir ());
 	}
 
 	if (appinfo == NULL) {
@@ -1009,25 +1015,125 @@ gs_plugin_app_launch_filtered (GsPlugin *plugin,
 		const gchar * const *dirs;
 		dirs = g_get_system_data_dirs ();
 		for (guint i = 0; dirs[i] && appinfo == NULL; i++) {
-			appinfo = check_directory_for_desktop_file (plugin, app, cb, user_data, desktop_id, dirs[i]);
+			appinfo = check_directory_for_desktop_file (plugin, data->app, data->cb, data->cb_user_data, desktop_id, dirs[i]);
 		}
 	}
 
 	if (appinfo == NULL) {
-		g_set_error (error,
-			     GS_PLUGIN_ERROR,
-			     GS_PLUGIN_ERROR_NOT_SUPPORTED,
-			     "no appropriate desktop file found: %s",
-			     desktop_id);
-		return FALSE;
+		g_task_return_new_error (task, GS_PLUGIN_ERROR,
+					 GS_PLUGIN_ERROR_NOT_SUPPORTED,
+					 "no appropriate desktop file found: %s",
+					 desktop_id);
+		return;
 	}
 
-	g_idle_add_full (G_PRIORITY_DEFAULT,
-			 gs_plugin_app_launch_cb,
-			 g_object_ref (appinfo),
-			 (GDestroyNotify) g_object_unref);
+	/* the actual launch happens in the _finish() function,
+	   which should be in the main thread */
+	data->appinfo = (GAppInfo *) g_steal_pointer (&appinfo);
+	g_task_return_boolean (task, TRUE);
+}
 
-	return TRUE;
+/**
+ * gs_plugin_app_launch_filtered_async:
+ * @plugin: a #GsPlugin
+ * @app: a #GsApp to launch
+ * @flags: a bit-or of #GsPluginLaunchFlags
+ * @cb: a callback to pick the correct .desktop file
+ * @cb_user_data: (closure cb) (scope async): user data for the @cb
+ * @cancellable: a #GCancellable or %NULL
+ * @async_callback: (not nullable): async call ready callback
+ * @async_user_data: (closure async_callback) (scope async): user data for the @async_callback
+ *
+ * Asynchronosuly launches @app, using the .desktop file picked by the @cb.
+ * This can help in case multiple versions of the @app are installed
+ * in the system (like a Flatpak and RPM versions).
+ * Finish the call with gs_plugin_app_launch_filtered_finish().
+ *
+ * The function also verifies whether the @plugin can handle the @app,
+ * in a sense of gs_app_has_management_plugin(), and if not then does
+ * nothing.
+ *
+ * Since: 47
+ **/
+void
+gs_plugin_app_launch_filtered_async (GsPlugin *plugin,
+				     GsApp *app,
+				     GsPluginLaunchFlags flags,
+				     GsPluginPickDesktopFileCallback cb,
+				     gpointer cb_user_data,
+				     GCancellable *cancellable,
+				     GAsyncReadyCallback async_callback,
+				     gpointer async_user_data)
+{
+	const gchar *desktop_id;
+	g_autoptr(GTask) task = NULL;
+	g_autoptr(LaunchFilteredData) data = NULL;
+
+	g_return_if_fail (GS_IS_PLUGIN (plugin));
+	g_return_if_fail (GS_IS_APP (app));
+	g_return_if_fail (cb != NULL);
+	g_return_if_fail (async_callback != NULL);
+
+	task = g_task_new (plugin, cancellable, async_callback, async_user_data);
+	g_task_set_source_tag (task, gs_plugin_app_launch_filtered_async);
+
+	/* only process this app if was created by this plugin */
+	if (!gs_app_has_management_plugin (app, plugin)) {
+		g_task_return_boolean (task, TRUE);
+		return;
+	}
+
+	desktop_id = get_desktop_id_to_launch (app);
+	if (desktop_id == NULL) {
+		g_task_return_new_error (task, GS_PLUGIN_ERROR,
+			     GS_PLUGIN_ERROR_NOT_SUPPORTED,
+			     "no desktop file for app: %s",
+			     gs_app_get_name (app));
+		return;
+	}
+
+	data = g_new0 (LaunchFilteredData, 1);
+	data->app = g_object_ref (app);
+	data->cb = cb;
+	data->cb_user_data = cb_user_data;
+
+	g_task_set_task_data (task, g_steal_pointer (&data), (GDestroyNotify) launch_filtered_data_free);
+	g_task_run_in_thread (task, launch_filtered_thread);
+}
+
+/**
+ * gs_plugin_app_launch_filtered_finish:
+ * @plugin: a #GsPlugin
+ * @result: an async result
+ * @error: a #GError or %NULL
+ *
+ * Finishes operation started by gs_plugin_app_launch_finltered_async().
+ * This function should be called from the main thread.
+ *
+ * Returns: whether succeeded
+ *
+ * Since: 47
+ **/
+gboolean
+gs_plugin_app_launch_filtered_finish (GsPlugin *plugin,
+				      GAsyncResult *result,
+				      GError **error)
+{
+	GTask *task = G_TASK (result);
+	LaunchFilteredData *data = NULL;
+
+	g_return_val_if_fail (g_task_is_valid (task, plugin), FALSE);
+	g_return_val_if_fail (g_async_result_is_tagged (result, gs_plugin_app_launch_filtered_async), FALSE);
+
+	if (!g_task_propagate_boolean (task, error))
+		return FALSE;
+
+	data = g_task_get_task_data (task);
+	/* the plugin does not manage the provided app */
+	if (data == NULL)
+		return TRUE;
+
+	return launch_app_info (data->appinfo, error);
 }
 
 static void
@@ -1385,44 +1491,6 @@ gs_plugin_error_to_string (GsPluginError error)
 }
 
 /**
- * gs_plugin_action_to_function_name: (skip)
- * @action: a #GsPluginAction, e.g. %GS_PLUGIN_ACTION_INSTALL
- *
- * Converts the enumerated action to the vfunc name.
- *
- * Returns: a string, or %NULL for invalid
- **/
-const gchar *
-gs_plugin_action_to_function_name (GsPluginAction action)
-{
-	if (action == GS_PLUGIN_ACTION_INSTALL)
-		return "gs_plugin_app_install";
-	if (action == GS_PLUGIN_ACTION_REMOVE)
-		return "gs_plugin_app_remove";
-	if (action == GS_PLUGIN_ACTION_UPGRADE_DOWNLOAD)
-		return "gs_plugin_app_upgrade_download";
-	if (action == GS_PLUGIN_ACTION_UPGRADE_TRIGGER)
-		return "gs_plugin_app_upgrade_trigger";
-	if (action == GS_PLUGIN_ACTION_LAUNCH)
-		return "gs_plugin_launch";
-	if (action == GS_PLUGIN_ACTION_UPDATE_CANCEL)
-		return "gs_plugin_update_cancel";
-	if (action == GS_PLUGIN_ACTION_FILE_TO_APP)
-		return "gs_plugin_file_to_app";
-	if (action == GS_PLUGIN_ACTION_URL_TO_APP)
-		return "gs_plugin_url_to_app";
-	if (action == GS_PLUGIN_ACTION_GET_SOURCES)
-		return "gs_plugin_add_sources";
-	if (action == GS_PLUGIN_ACTION_GET_UPDATES_HISTORICAL)
-		return "gs_plugin_add_updates_historical";
-	if (action == GS_PLUGIN_ACTION_GET_UPDATES)
-		return "gs_plugin_add_updates";
-	if (action == GS_PLUGIN_ACTION_GET_LANGPACKS)
-		return "gs_plugin_add_langpacks";
-	return NULL;
-}
-
-/**
  * gs_plugin_action_to_string:
  * @action: a #GsPluginAction, e.g. %GS_PLUGIN_ACTION_INSTALL
  *
@@ -1467,6 +1535,8 @@ gs_plugin_action_to_string (GsPluginAction action)
 		return "repo-enable";
 	if (action == GS_PLUGIN_ACTION_DISABLE_REPO)
 		return "repo-disable";
+	if (action == GS_PLUGIN_ACTION_REFRESH_METADATA)
+		return "refresh-metadata";
 	return NULL;
 }
 
@@ -1515,7 +1585,35 @@ gs_plugin_action_from_string (const gchar *action)
 		return GS_PLUGIN_ACTION_ENABLE_REPO;
 	if (g_strcmp0 (action, "repo-disable") == 0)
 		return GS_PLUGIN_ACTION_DISABLE_REPO;
+	if (g_strcmp0 (action, "refresh-metadata") == 0)
+		return GS_PLUGIN_ACTION_REFRESH_METADATA;
 	return GS_PLUGIN_ACTION_UNKNOWN;
+}
+
+/**
+ * gs_plugin_refine_job_flags_to_string:
+ * @refine_job_flags: some #GsPluginRefineJobFlags, e.g. %GS_PLUGIN_REFINE_JOB_FLAGS_INTERACTIVE
+ *
+ * Converts the refine job flags to a string.
+ *
+ * Returns: a string
+ *
+ * Since: 47
+ **/
+gchar *
+gs_plugin_refine_job_flags_to_string (GsPluginRefineJobFlags refine_job_flags)
+{
+	g_autoptr(GPtrArray) cstrs = g_ptr_array_new ();
+	if ((refine_job_flags & GS_PLUGIN_REFINE_JOB_FLAGS_INTERACTIVE) != 0)
+		g_ptr_array_add (cstrs, (gpointer) "interactive");
+	if ((refine_job_flags & GS_PLUGIN_REFINE_JOB_FLAGS_ALLOW_PACKAGES) != 0)
+		g_ptr_array_add (cstrs, (gpointer) "allow-packages");
+	if ((refine_job_flags & GS_PLUGIN_REFINE_JOB_FLAGS_DISABLE_FILTERING) != 0)
+		g_ptr_array_add (cstrs, (gpointer) "disable-filtering");
+	if (cstrs->len == 0)
+		return g_strdup ("none");
+	g_ptr_array_add (cstrs, NULL);
+	return g_strjoinv (",", (gchar**) cstrs->pdata);
 }
 
 /**
@@ -1556,8 +1654,6 @@ gs_plugin_refine_flags_to_string (GsPluginRefineFlags refine_flags)
 		g_ptr_array_add (cstrs, (gpointer) "require-related");
 	if (refine_flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_ADDONS)
 		g_ptr_array_add (cstrs, (gpointer) "require-addons");
-	if (refine_flags & GS_PLUGIN_REFINE_FLAGS_ALLOW_PACKAGES)
-		g_ptr_array_add (cstrs, (gpointer) "require-allow-packages");
 	if (refine_flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_UPDATE_SEVERITY)
 		g_ptr_array_add (cstrs, (gpointer) "require-update-severity");
 	if (refine_flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_UPGRADE_REMOVED)
@@ -1588,8 +1684,6 @@ gs_plugin_refine_flags_to_string (GsPluginRefineFlags refine_flags)
 		g_ptr_array_add (cstrs, (gpointer) "require-developer-name");
 	if (refine_flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_KUDOS)
 		g_ptr_array_add (cstrs, (gpointer) "require-kudos");
-	if (refine_flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_CONTENT_RATING)
-		g_ptr_array_add (cstrs, (gpointer) "content-rating");
 	if (cstrs->len == 0)
 		return g_strdup ("none");
 	g_ptr_array_add (cstrs, NULL);
@@ -1616,10 +1710,6 @@ gs_plugin_set_property (GObject *object, guint prop_id, const GValue *value, GPa
 	GsPluginPrivate *priv = gs_plugin_get_instance_private (plugin);
 
 	switch ((GsPluginProperty) prop_id) {
-	case PROP_FLAGS:
-		priv->flags = g_value_get_flags (value);
-		g_object_notify_by_pspec (G_OBJECT (plugin), obj_props[PROP_FLAGS]);
-		break;
 	case PROP_SESSION_BUS_CONNECTION:
 		/* Construct only */
 		g_assert (priv->session_bus_connection == NULL);
@@ -1643,9 +1733,6 @@ gs_plugin_get_property (GObject *object, guint prop_id, GValue *value, GParamSpe
 	GsPluginPrivate *priv = gs_plugin_get_instance_private (plugin);
 
 	switch ((GsPluginProperty) prop_id) {
-	case PROP_FLAGS:
-		g_value_set_flags (value, priv->flags);
-		break;
 	case PROP_SESSION_BUS_CONNECTION:
 		g_value_set_object (value, priv->session_bus_connection);
 		break;
@@ -1668,18 +1755,6 @@ gs_plugin_class_init (GsPluginClass *klass)
 	object_class->get_property = gs_plugin_get_property;
 	object_class->dispose = gs_plugin_dispose;
 	object_class->finalize = gs_plugin_finalize;
-
-	/**
-	 * GsPlugin:flags:
-	 *
-	 * Flags which indicate various boolean properties of the plugin.
-	 *
-	 * These may change during the plugin’s lifetime.
-	 */
-	obj_props[PROP_FLAGS] =
-		g_param_spec_flags ("flags", NULL, NULL,
-				    GS_TYPE_PLUGIN_FLAGS, GS_PLUGIN_FLAGS_NONE,
-				    G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY);
 
 	/**
 	 * GsPlugin:session-bus-connection: (not nullable)
@@ -1788,7 +1863,6 @@ gs_plugin_init (GsPlugin *plugin)
 	priv->vfuncs = g_hash_table_new_full (g_str_hash, g_str_equal,
 					      g_free, NULL);
 	g_mutex_init (&priv->cache_mutex);
-	g_mutex_init (&priv->interactive_mutex);
 	g_mutex_init (&priv->timer_mutex);
 	g_mutex_init (&priv->vfuncs_mutex);
 }

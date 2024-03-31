@@ -237,6 +237,65 @@ gs_plugin_packagekit_finalize (GObject *object)
 	G_OBJECT_CLASS (gs_plugin_packagekit_parent_class)->finalize (object);
 }
 
+static gboolean
+gs_plugin_packagekit_convert_error (GError **error,
+				    PkErrorEnum error_enum,
+				    const gchar *details,
+				    const gchar *prefix)
+{
+	switch (error_enum) {
+	case PK_ERROR_ENUM_PACKAGE_DOWNLOAD_FAILED:
+	case PK_ERROR_ENUM_NO_CACHE:
+	case PK_ERROR_ENUM_NO_NETWORK:
+	case PK_ERROR_ENUM_NO_MORE_MIRRORS_TO_TRY:
+	case PK_ERROR_ENUM_CANNOT_FETCH_SOURCES:
+	case PK_ERROR_ENUM_UNFINISHED_TRANSACTION:
+		g_set_error_literal (error,
+				     GS_PLUGIN_ERROR,
+				     GS_PLUGIN_ERROR_NO_NETWORK,
+				     details);
+		break;
+	case PK_ERROR_ENUM_BAD_GPG_SIGNATURE:
+	case PK_ERROR_ENUM_CANNOT_UPDATE_REPO_UNSIGNED:
+	case PK_ERROR_ENUM_GPG_FAILURE:
+	case PK_ERROR_ENUM_MISSING_GPG_SIGNATURE:
+	case PK_ERROR_ENUM_PACKAGE_CORRUPT:
+		g_set_error_literal (error,
+				     GS_PLUGIN_ERROR,
+				     GS_PLUGIN_ERROR_NO_SECURITY,
+				     details);
+		break;
+	case PK_ERROR_ENUM_TRANSACTION_CANCELLED:
+		g_set_error_literal (error,
+				     GS_PLUGIN_ERROR,
+				     GS_PLUGIN_ERROR_CANCELLED,
+				     details);
+		break;
+	case PK_ERROR_ENUM_NO_PACKAGES_TO_UPDATE:
+	case PK_ERROR_ENUM_UPDATE_NOT_FOUND:
+		g_set_error_literal (error,
+				     GS_PLUGIN_ERROR,
+				     GS_PLUGIN_ERROR_NOT_SUPPORTED,
+				     details);
+		break;
+	case PK_ERROR_ENUM_NO_SPACE_ON_DEVICE:
+		g_set_error_literal (error,
+				     GS_PLUGIN_ERROR,
+				     GS_PLUGIN_ERROR_NO_SPACE,
+				     details);
+		break;
+	default:
+		g_set_error_literal (error,
+				     GS_PLUGIN_ERROR,
+				     GS_PLUGIN_ERROR_FAILED,
+				     details);
+		break;
+	}
+	if (prefix != NULL)
+		g_prefix_error_literal (error, prefix);
+	return FALSE;
+}
+
 typedef gboolean (*GsAppFilterFunc) (GsApp *app);
 
 static gboolean
@@ -293,80 +352,6 @@ app_list_get_package_ids (GsAppList       *apps,
 	return g_steal_pointer (&list_package_ids);
 }
 
-gboolean
-gs_plugin_add_sources (GsPlugin *plugin,
-		       GsAppList *list,
-		       GCancellable *cancellable,
-		       GError **error)
-{
-	GsPluginPackagekit *self = GS_PLUGIN_PACKAGEKIT (plugin);
-	PkBitfield filter;
-	PkRepoDetail *rd;
-	g_autoptr(GsPackagekitHelper) helper = gs_packagekit_helper_new (plugin);
-	g_autoptr(PkTask) task_sources = NULL;
-	const gchar *id;
-	guint i;
-	g_autoptr(GMutexLocker) locker = NULL;
-	g_autoptr(PkResults) results = NULL;
-	g_autoptr(GPtrArray) array = NULL;
-
-	/* ask PK for the repo details */
-	filter = pk_bitfield_from_enums (PK_FILTER_ENUM_NOT_SOURCE,
-					 PK_FILTER_ENUM_NOT_DEVELOPMENT,
-					 -1);
-
-	task_sources = gs_packagekit_task_new (plugin);
-	gs_packagekit_task_setup (GS_PACKAGEKIT_TASK (task_sources), GS_PACKAGEKIT_TASK_QUESTION_TYPE_NONE, gs_plugin_has_flags (plugin, GS_PLUGIN_FLAGS_INTERACTIVE));
-
-	results = pk_client_get_repo_list (PK_CLIENT (task_sources),
-					   filter,
-					   cancellable,
-					   gs_packagekit_helper_cb, helper,
-					   error);
-
-	if (!gs_plugin_packagekit_results_valid (results, cancellable, error))
-		return FALSE;
-	locker = g_mutex_locker_new (&self->cached_sources_mutex);
-	if (self->cached_sources == NULL)
-		self->cached_sources = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
-	array = pk_results_get_repo_detail_array (results);
-	for (i = 0; i < array->len; i++) {
-		g_autoptr(GsApp) app = NULL;
-		rd = g_ptr_array_index (array, i);
-		id = pk_repo_detail_get_id (rd);
-		app = g_hash_table_lookup (self->cached_sources, id);
-		if (app == NULL) {
-			app = gs_app_new (id);
-			gs_app_set_management_plugin (app, plugin);
-			gs_app_set_kind (app, AS_COMPONENT_KIND_REPOSITORY);
-			gs_app_set_bundle_kind (app, AS_BUNDLE_KIND_PACKAGE);
-			gs_app_set_scope (app, AS_COMPONENT_SCOPE_SYSTEM);
-			gs_app_add_quirk (app, GS_APP_QUIRK_NOT_LAUNCHABLE);
-			gs_app_set_state (app, pk_repo_detail_get_enabled (rd) ?
-					  GS_APP_STATE_INSTALLED : GS_APP_STATE_AVAILABLE);
-			gs_app_set_name (app,
-					 GS_APP_QUALITY_HIGHEST,
-					 pk_repo_detail_get_description (rd));
-			gs_app_set_summary (app,
-					    GS_APP_QUALITY_HIGHEST,
-					    pk_repo_detail_get_description (rd));
-			gs_plugin_packagekit_set_packaging_format (plugin, app);
-			gs_app_set_metadata (app, "GnomeSoftware::SortKey", "300");
-			gs_app_set_origin_ui (app, _("Packages"));
-			g_hash_table_insert (self->cached_sources, g_strdup (id), app);
-			g_object_weak_ref (G_OBJECT (app), cached_sources_weak_ref_cb, self);
-		} else {
-			g_object_ref (app);
-			/* The repo-related apps are those installed; due to re-using
-			   cached app, make sure the list is populated from fresh data. */
-			gs_app_list_remove_all (gs_app_get_related (app));
-		}
-		gs_app_list_add (list, app);
-	}
-
-	return TRUE;
-}
-
 static gboolean
 gs_plugin_app_origin_repo_enable (GsPluginPackagekit  *self,
                                   PkTask              *task_enable_repo,
@@ -421,57 +406,188 @@ gs_plugin_app_origin_repo_enable (GsPluginPackagekit  *self,
 	return TRUE;
 }
 
-gboolean
-gs_plugin_app_install (GsPlugin *plugin,
-		       GsApp *app,
-		       GCancellable *cancellable,
-		       GError **error)
+static void
+gs_plugin_packagekit_install_app_installed (GObject *source_object,
+					    GAsyncResult *result,
+					    gpointer user_data)
+{
+	g_autoptr(GTask) task = user_data;
+	GsPluginManageAppData *data = g_task_get_task_data (task);
+	g_autoptr(PkResults) results = NULL;
+	g_autoptr(GError) local_error = NULL;
+
+	results = pk_task_generic_finish (PK_TASK (source_object), result, &local_error);
+
+	if (!gs_plugin_packagekit_results_valid (results, g_task_get_cancellable (task), &local_error)) {
+		gs_app_set_state_recover (data->app);
+		g_task_return_error (task, g_steal_pointer (&local_error));
+		return;
+	}
+
+	/* state is known */
+	gs_app_set_state (data->app, GS_APP_STATE_INSTALLED);
+
+	/* if we remove the app again later, we should be able to
+	 * cancel the installation if we'd never installed it */
+	gs_app_set_allow_cancel (data->app, TRUE);
+
+	/* no longer valid */
+	gs_app_clear_source_ids (data->app);
+
+	g_task_return_boolean (task, TRUE);
+}
+
+static void
+gs_plugin_packagekit_install_app_installed_file (GObject *source_object,
+						 GAsyncResult *result,
+						 gpointer user_data)
+{
+	g_autoptr(GTask) task = user_data;
+	GsPluginManageAppData *data = g_task_get_task_data (task);
+	g_autoptr(PkResults) results = NULL;
+	g_autoptr(GError) local_error = NULL;
+
+	results = pk_task_generic_finish (PK_TASK (source_object), result, &local_error);
+
+	if (!gs_plugin_packagekit_results_valid (results, g_task_get_cancellable (task), &local_error)) {
+		gs_app_set_state_recover (data->app);
+		g_task_return_error (task, g_steal_pointer (&local_error));
+		return;
+	}
+
+	/* state is known */
+	gs_app_set_state (data->app, GS_APP_STATE_INSTALLED);
+
+	/* get the new icon from the package */
+	gs_app_set_local_file (data->app, NULL);
+	gs_app_remove_all_icons (data->app);
+
+	/* no longer valid */
+	gs_app_clear_source_ids (data->app);
+
+	g_task_return_boolean (task, TRUE);
+}
+
+typedef struct {
+	GTask *task; /* (owned) */
+	GsAppList *addons; /* (owned) (nullable) */
+} InstallWithAddonsData;
+
+static void
+install_with_addons_data_free (InstallWithAddonsData *data)
+{
+	if (data != NULL) {
+		g_clear_object (&data->task);
+		g_clear_object (&data->addons);
+		g_free (data);
+	}
+}
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC (InstallWithAddonsData, install_with_addons_data_free)
+
+static void
+gs_plugin_packagekit_install_app_installed_with_addons (GObject *source_object,
+							GAsyncResult *result,
+							gpointer user_data)
+{
+	g_autoptr(InstallWithAddonsData) install_with_addons_data = user_data;
+	g_autoptr(PkResults) results = NULL;
+	g_autoptr(GError) local_error = NULL;
+	GTask *task = install_with_addons_data->task;
+	GsPluginManageAppData *data = g_task_get_task_data (task);
+
+	results = pk_task_generic_finish (PK_TASK (source_object), result, &local_error);
+
+	if (results == NULL || !gs_plugin_packagekit_results_valid (results, g_task_get_cancellable (task), &local_error)) {
+		gs_app_set_state_recover (data->app);
+		for (guint i = 0; install_with_addons_data->addons != NULL && i < gs_app_list_length (install_with_addons_data->addons); i++) {
+			GsApp *addon = gs_app_list_index (install_with_addons_data->addons, i);
+			if (gs_app_get_state (addon) == GS_APP_STATE_INSTALLING)
+				gs_app_set_state_recover (addon);
+		}
+		g_task_return_error (task, g_steal_pointer (&local_error));
+		return;
+	}
+
+	/* state is known */
+	for (guint i = 0; install_with_addons_data->addons != NULL && i < gs_app_list_length (install_with_addons_data->addons); i++) {
+		GsApp *addon = gs_app_list_index (install_with_addons_data->addons, i);
+		if (gs_app_get_state (addon) == GS_APP_STATE_INSTALLING) {
+			gs_app_set_state (addon, GS_APP_STATE_INSTALLED);
+			gs_app_clear_source_ids (addon);
+		}
+	}
+	gs_app_set_state (data->app, GS_APP_STATE_INSTALLED);
+
+	/* no longer valid */
+	gs_app_clear_source_ids (data->app);
+
+	g_task_return_boolean (task, TRUE);
+}
+
+static void
+gs_plugin_packagekit_install_app_async (GsPlugin *plugin,
+					GsApp *app,
+					GsPluginManageAppFlags flags,
+					GCancellable *cancellable,
+					GAsyncReadyCallback callback,
+					gpointer user_data)
 {
 	GsPluginPackagekit *self = GS_PLUGIN_PACKAGEKIT (plugin);
-	g_autoptr(GsAppList) addons = NULL;
 	GPtrArray *source_ids;
+	g_auto(GStrv) package_ids = NULL;
+	g_autofree gchar *local_filename = NULL;
+	g_autoptr(GTask) task = NULL;
+	g_autoptr(GsAppList) addons = NULL;
 	g_autoptr(GsPackagekitHelper) helper = gs_packagekit_helper_new (plugin);
 	g_autoptr(PkTask) task_install = NULL;
+	g_autoptr(GPtrArray) array_package_ids = NULL;
+	g_autoptr(GError) local_error = NULL;
+	g_autoptr(InstallWithAddonsData) install_with_addons_data = NULL;
 	const gchar *package_id;
 	guint i;
-	g_autofree gchar *local_filename = NULL;
-	g_auto(GStrv) package_ids = NULL;
-	g_autoptr(GPtrArray) array_package_ids = NULL;
-	g_autoptr(PkResults) results = NULL;
+	gboolean interactive = (flags & GS_PLUGIN_MANAGE_APP_FLAGS_INTERACTIVE) != 0;
+
+	task = gs_plugin_manage_app_data_new_task (plugin, app, flags, cancellable, callback, user_data);
+	g_task_set_source_tag (task, gs_plugin_packagekit_install_app_async);
 
 	/* only process this app if was created by this plugin */
-	if (!gs_app_has_management_plugin (app, plugin))
-		return TRUE;
+	if (!gs_app_has_management_plugin (app, plugin)) {
+		g_task_return_boolean (task, TRUE);
+		return;
+	}
 
-	/* enable repo, handled by dedicated function */
-	g_return_val_if_fail (gs_app_get_kind (app) != AS_COMPONENT_KIND_REPOSITORY, FALSE);
+	/* is not a source */
+	g_assert (gs_app_get_kind (app) != AS_COMPONENT_KIND_REPOSITORY);
 
 	/* queue for install if installation needs the network */
 	if (!gs_plugin_get_network_available (plugin)) {
 		gs_app_set_state (app, GS_APP_STATE_QUEUED_FOR_INSTALL);
-		return TRUE;
+		g_task_return_boolean (task, TRUE);
+		return;
 	}
 
 	/* Set up a #PkTask to handle the D-Bus calls to packagekitd. */
 	task_install = gs_packagekit_task_new (plugin);
-	gs_packagekit_task_setup (GS_PACKAGEKIT_TASK (task_install), GS_PACKAGEKIT_TASK_QUESTION_TYPE_INSTALL, gs_plugin_has_flags (plugin, GS_PLUGIN_FLAGS_INTERACTIVE));
+	gs_packagekit_task_setup (GS_PACKAGEKIT_TASK (task_install), GS_PACKAGEKIT_TASK_QUESTION_TYPE_INSTALL, interactive);
 
 	if (gs_app_get_state (app) == GS_APP_STATE_UNAVAILABLE) {
 		/* get everything up front we need */
 		source_ids = gs_app_get_source_ids (app);
 		if (source_ids->len == 0) {
-			g_set_error_literal (error,
-					     GS_PLUGIN_ERROR,
-					     GS_PLUGIN_ERROR_NOT_SUPPORTED,
-					     "installing not available");
-			return FALSE;
+			g_task_return_new_error (task, GS_PLUGIN_ERROR,
+						 GS_PLUGIN_ERROR_NOT_SUPPORTED,
+						 "installing not available");
+			return;
 		}
 		package_ids = g_new0 (gchar *, 2);
 		package_ids[0] = g_strdup (g_ptr_array_index (source_ids, 0));
 
 		/* enable the repo where the unavailable app is coming from */
-		if (!gs_plugin_app_origin_repo_enable (self, task_install, app, cancellable, error))
-			return FALSE;
+		if (!gs_plugin_app_origin_repo_enable (self, task_install, app, cancellable, &local_error)) {
+			g_task_return_error (task, g_steal_pointer (&local_error));
+			return;
+		}
 
 		gs_app_set_state (app, GS_APP_STATE_INSTALLING);
 
@@ -482,28 +598,14 @@ gs_plugin_app_install (GsPlugin *plugin,
 
 		/* actually install the package */
 		gs_packagekit_helper_add_app (helper, app);
+		gs_packagekit_task_take_helper (GS_PACKAGEKIT_TASK (task_install), helper);
 
-		results = pk_task_install_packages_sync (task_install,
-							 package_ids,
-							 cancellable,
-							 gs_packagekit_helper_cb, helper,
-							 error);
+		pk_task_install_packages_async (task_install, package_ids, cancellable,
+						gs_packagekit_helper_cb, g_steal_pointer (&helper),
+						gs_plugin_packagekit_install_app_installed,
+						g_steal_pointer (&task));
 
-		if (!gs_plugin_packagekit_results_valid (results, cancellable, error)) {
-			gs_app_set_state_recover (app);
-			return FALSE;
-		}
-
-		/* state is known */
-		gs_app_set_state (app, GS_APP_STATE_INSTALLED);
-
-		/* if we remove the app again later, we should be able to
-		 * cancel the installation if we'd never installed it */
-		gs_app_set_allow_cancel (app, TRUE);
-
-		/* no longer valid */
-		gs_app_clear_source_ids (app);
-		return TRUE;
+		return;
 	}
 
 	/* get the list of available package ids to install */
@@ -513,11 +615,10 @@ gs_plugin_app_install (GsPlugin *plugin,
 	case GS_APP_STATE_QUEUED_FOR_INSTALL:
 		source_ids = gs_app_get_source_ids (app);
 		if (source_ids->len == 0) {
-			g_set_error_literal (error,
-					     GS_PLUGIN_ERROR,
-					     GS_PLUGIN_ERROR_NOT_SUPPORTED,
-					     "installing not available");
-			return FALSE;
+			g_task_return_new_error (task, GS_PLUGIN_ERROR,
+						 GS_PLUGIN_ERROR_NOT_SUPPORTED,
+						 "installing not available");
+			return;
 		}
 
 		addons = gs_app_dup_addons (app);
@@ -533,11 +634,10 @@ gs_plugin_app_install (GsPlugin *plugin,
 		}
 
 		if (array_package_ids->len == 0) {
-			g_set_error_literal (error,
-					     GS_PLUGIN_ERROR,
-					     GS_PLUGIN_ERROR_NOT_SUPPORTED,
-					     "no packages to install");
-			return FALSE;
+			g_task_return_new_error (task, GS_PLUGIN_ERROR,
+						 GS_PLUGIN_ERROR_NOT_SUPPORTED,
+						 "no packages to install");
+			return;
 		}
 
 		/* NULL-terminate the array */
@@ -551,112 +651,131 @@ gs_plugin_app_install (GsPlugin *plugin,
 				gs_app_set_state (addon, GS_APP_STATE_INSTALLING);
 		}
 		gs_packagekit_helper_add_app (helper, app);
+		gs_packagekit_task_take_helper (GS_PACKAGEKIT_TASK (task_install), helper);
 
-		results = pk_task_install_packages_sync (task_install,
-							 (gchar **) array_package_ids->pdata,
-							 cancellable,
-							 gs_packagekit_helper_cb, helper,
-							 error);
+		install_with_addons_data = g_new0 (InstallWithAddonsData, 1);
+		install_with_addons_data->task = g_steal_pointer (&task);
+		install_with_addons_data->addons = g_steal_pointer (&addons);
 
-		if (!gs_plugin_packagekit_results_valid (results, cancellable, error)) {
-			for (i = 0; addons != NULL && i < gs_app_list_length (addons); i++) {
-				GsApp *addon = gs_app_list_index (addons, i);
-				if (gs_app_get_state (addon) == GS_APP_STATE_INSTALLING)
-					gs_app_set_state_recover (addon);
-			}
-			gs_app_set_state_recover (app);
-			return FALSE;
-		}
-
-		/* state is known */
-		for (i = 0; addons != NULL && i < gs_app_list_length (addons); i++) {
-			GsApp *addon = gs_app_list_index (addons, i);
-			if (gs_app_get_state (addon) == GS_APP_STATE_INSTALLING) {
-				gs_app_set_state (addon, GS_APP_STATE_INSTALLED);
-				gs_app_clear_source_ids (addon);
-			}
-		}
-		gs_app_set_state (app, GS_APP_STATE_INSTALLED);
-
+		pk_task_install_packages_async (task_install,
+						(gchar **) array_package_ids->pdata,
+						cancellable,
+						gs_packagekit_helper_cb, g_steal_pointer (&helper),
+						gs_plugin_packagekit_install_app_installed_with_addons,
+						g_steal_pointer (&install_with_addons_data));
 		break;
 	case GS_APP_STATE_AVAILABLE_LOCAL:
 		if (gs_app_get_local_file (app) == NULL) {
-			g_set_error_literal (error,
-					     GS_PLUGIN_ERROR,
-					     GS_PLUGIN_ERROR_NOT_SUPPORTED,
-					     "local package, but no filename");
-			return FALSE;
+			g_task_return_new_error (task, GS_PLUGIN_ERROR,
+						 GS_PLUGIN_ERROR_NOT_SUPPORTED,
+						 "local package, but no filename");
+			return;
 		}
 		local_filename = g_file_get_path (gs_app_get_local_file (app));
 		package_ids = g_strsplit (local_filename, "\t", -1);
 
 		gs_app_set_state (app, GS_APP_STATE_INSTALLING);
 		gs_packagekit_helper_add_app (helper, app);
+		gs_packagekit_task_take_helper (GS_PACKAGEKIT_TASK (task_install), helper);
 
-		results = pk_task_install_files_sync (task_install,
-						      package_ids,
-						      cancellable,
-						      gs_packagekit_helper_cb, helper,
-						      error);
-
-		if (!gs_plugin_packagekit_results_valid (results, cancellable, error)) {
-			gs_app_set_state_recover (app);
-			return FALSE;
-		}
-
-		/* state is known */
-		gs_app_set_state (app, GS_APP_STATE_INSTALLED);
-
-		/* get the new icon from the package */
-		gs_app_set_local_file (app, NULL);
-		gs_app_remove_all_icons (app);
+		pk_task_install_files_async (task_install, package_ids, cancellable,
+					     gs_packagekit_helper_cb, g_steal_pointer (&helper),
+					     gs_plugin_packagekit_install_app_installed_file,
+					     g_steal_pointer (&task));
 		break;
 	default:
-		g_set_error (error,
-			     GS_PLUGIN_ERROR,
-			     GS_PLUGIN_ERROR_NOT_SUPPORTED,
-			     "do not know how to install app in state %s",
-			     gs_app_state_to_string (gs_app_get_state (app)));
-		return FALSE;
+		g_task_return_new_error (task, GS_PLUGIN_ERROR,
+					 GS_PLUGIN_ERROR_NOT_SUPPORTED,
+					 "do not know how to install app in state %s",
+					 gs_app_state_to_string (gs_app_get_state (app)));
+		return;
 	}
-
-	/* no longer valid */
-	gs_app_clear_source_ids (app);
-
-	return TRUE;
 }
 
-gboolean
-gs_plugin_app_remove (GsPlugin *plugin,
-		      GsApp *app,
-		      GCancellable *cancellable,
-		      GError **error)
+static gboolean
+gs_plugin_packagekit_install_app_finish (GsPlugin *plugin,
+					 GAsyncResult *result,
+					 GError **error)
+{
+	return g_task_propagate_boolean (G_TASK (result), error);
+}
+
+static void
+gs_plugin_packagekit_remove_app_removed (GObject *source_object,
+					 GAsyncResult *result,
+					 gpointer user_data)
+{
+	g_autoptr(GTask) task = user_data;
+	GsPluginManageAppData *data = g_task_get_task_data (task);
+	g_autoptr(GsAppList) addons = NULL;
+	g_autoptr(PkResults) results = NULL;
+	g_autoptr(GError) local_error = NULL;
+
+	results = pk_task_generic_finish (PK_TASK (source_object), result, &local_error);
+
+	if (results == NULL || !gs_plugin_packagekit_results_valid (results, g_task_get_cancellable (task), &local_error)) {
+		gs_app_set_state_recover (data->app);
+		g_task_return_error (task, g_steal_pointer (&local_error));
+		return;
+	}
+
+	/* Make sure addons' state is updated as well */
+	addons = gs_app_dup_addons (data->app);
+	for (guint i = 0; addons != NULL && i < gs_app_list_length (addons); i++) {
+		GsApp *addon = gs_app_list_index (addons, i);
+		if (gs_app_get_state (addon) == GS_APP_STATE_INSTALLED) {
+			gs_app_set_state (addon, GS_APP_STATE_UNKNOWN);
+			gs_app_clear_source_ids (addon);
+		}
+	}
+
+	/* state is not known: we don't know if we can re-install this app */
+	gs_app_set_state (data->app, GS_APP_STATE_UNKNOWN);
+
+	/* no longer valid */
+	gs_app_clear_source_ids (data->app);
+
+	g_task_return_boolean (task, TRUE);
+}
+
+static void
+gs_plugin_packagekit_remove_app_async (GsPlugin *plugin,
+				       GsApp *app,
+				       GsPluginManageAppFlags flags,
+				       GCancellable *cancellable,
+				       GAsyncReadyCallback callback,
+				       gpointer user_data)
 {
 	const gchar *package_id;
 	GPtrArray *source_ids;
-	g_autoptr(GsAppList) addons = NULL;
+	g_autoptr(GTask) task = NULL;
 	g_autoptr(GsPackagekitHelper) helper = gs_packagekit_helper_new (plugin);
 	g_autoptr(PkTask) task_remove = NULL;
 	guint i;
 	guint cnt = 0;
 	g_autoptr(PkResults) results = NULL;
 	g_auto(GStrv) package_ids = NULL;
+	gboolean interactive = (flags & GS_PLUGIN_MANAGE_APP_FLAGS_INTERACTIVE) != 0;
+
+	task = gs_plugin_manage_app_data_new_task (plugin, app, flags, cancellable, callback, user_data);
+	g_task_set_source_tag (task, gs_plugin_packagekit_remove_app_async);
 
 	/* only process this app if was created by this plugin */
-	if (!gs_app_has_management_plugin (app, plugin))
-		return TRUE;
+	if (!gs_app_has_management_plugin (app, plugin)) {
+		g_task_return_boolean (task, TRUE);
+		return;
+	}
 
 	/* disable repo, handled by dedicated function */
-	g_return_val_if_fail (gs_app_get_kind (app) != AS_COMPONENT_KIND_REPOSITORY, FALSE);
+	g_assert (gs_app_get_kind (app) != AS_COMPONENT_KIND_REPOSITORY);
 
 	/* get the list of available package ids to install */
 	source_ids = gs_app_get_source_ids (app);
 	if (source_ids->len == 0) {
-		g_set_error_literal (error,
-				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_NOT_SUPPORTED,
-				     "removing not available");
-		return FALSE;
+		g_task_return_new_error (task, GS_PLUGIN_ERROR,
+					 GS_PLUGIN_ERROR_NOT_SUPPORTED,
+					 "%s", "removing not available");
+		return;
 	}
 	package_ids = g_new0 (gchar *, source_ids->len + 1);
 	for (i = 0; i < source_ids->len; i++) {
@@ -666,11 +785,10 @@ gs_plugin_app_remove (GsPlugin *plugin,
 		package_ids[cnt++] = g_strdup (package_id);
 	}
 	if (cnt == 0) {
-		g_set_error_literal (error,
-				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_NOT_SUPPORTED,
-				     "no packages to remove");
-		return FALSE;
+		g_task_return_new_error (task, GS_PLUGIN_ERROR,
+					 GS_PLUGIN_ERROR_NOT_SUPPORTED,
+					 "%s", "no packages to remove");
+		return;
 	}
 
 	/* do the action */
@@ -678,37 +796,24 @@ gs_plugin_app_remove (GsPlugin *plugin,
 	gs_packagekit_helper_add_app (helper, app);
 
 	task_remove = gs_packagekit_task_new (plugin);
-	gs_packagekit_task_setup (GS_PACKAGEKIT_TASK (task_remove), GS_PACKAGEKIT_TASK_QUESTION_TYPE_NONE, gs_plugin_has_flags (plugin, GS_PLUGIN_FLAGS_INTERACTIVE));
+	gs_packagekit_task_setup (GS_PACKAGEKIT_TASK (task_remove), GS_PACKAGEKIT_TASK_QUESTION_TYPE_NONE, interactive);
+	gs_packagekit_task_take_helper (GS_PACKAGEKIT_TASK (task_remove), helper);
 
-	results = pk_task_remove_packages_sync (task_remove,
-						package_ids,
-						TRUE, GS_PACKAGEKIT_AUTOREMOVE,
-						cancellable,
-						gs_packagekit_helper_cb, helper,
-						error);
+	pk_task_remove_packages_async (task_remove,
+				       package_ids,
+				       TRUE, GS_PACKAGEKIT_AUTOREMOVE,
+				       cancellable,
+				       gs_packagekit_helper_cb, g_steal_pointer (&helper),
+				       gs_plugin_packagekit_remove_app_removed,
+				       g_steal_pointer (&task));
+}
 
-	if (!gs_plugin_packagekit_results_valid (results, cancellable, error)) {
-		gs_app_set_state_recover (app);
-		return FALSE;
-	}
-
-	/* Make sure addons' state is updated as well */
-	addons = gs_app_dup_addons (app);
-	for (i = 0; addons != NULL && i < gs_app_list_length (addons); i++) {
-		GsApp *addon = gs_app_list_index (addons, i);
-		if (gs_app_get_state (addon) == GS_APP_STATE_INSTALLED) {
-			gs_app_set_state (addon, GS_APP_STATE_UNKNOWN);
-			gs_app_clear_source_ids (addon);
-		}
-	}
-
-	/* state is not known: we don't know if we can re-install this app */
-	gs_app_set_state (app, GS_APP_STATE_UNKNOWN);
-
-	/* no longer valid */
-	gs_app_clear_source_ids (app);
-
-	return TRUE;
+static gboolean
+gs_plugin_packagekit_remove_app_finish (GsPlugin *plugin,
+					GAsyncResult *result,
+					GError **error)
+{
+	return g_task_propagate_boolean (G_TASK (result), error);
 }
 
 static void
@@ -756,30 +861,15 @@ gs_plugin_packagekit_build_update_app (GsPlugin *plugin, PkPackage *package)
 }
 
 static gboolean
-gs_plugin_packagekit_add_updates (GsPlugin *plugin,
-				  GsAppList *list,
-				  GCancellable *cancellable,
-				  GError **error)
+gs_plugin_package_list_updates_process_results (GsPlugin *plugin,
+						PkResults *results,
+						GsAppList *list,
+						GCancellable *cancellable,
+						GError **error)
 {
-	g_autoptr(GsPackagekitHelper) helper = gs_packagekit_helper_new (plugin);
-	g_autoptr(PkTask) task_updates = NULL;
-	g_autoptr(PkResults) results = NULL;
 	g_autoptr(GPtrArray) array = NULL;
 	g_autoptr(GsApp) first_app = NULL;
 	gboolean all_downloaded = TRUE;
-
-	/* do sync call */
-	gs_plugin_status_update (plugin, NULL, GS_PLUGIN_STATUS_WAITING);
-
-	task_updates = gs_packagekit_task_new (plugin);
-	gs_packagekit_task_setup (GS_PACKAGEKIT_TASK (task_updates), GS_PACKAGEKIT_TASK_QUESTION_TYPE_NONE, gs_plugin_has_flags (plugin, GS_PLUGIN_FLAGS_INTERACTIVE));
-	gs_packagekit_helper_set_allow_emit_updates_changed (helper, FALSE);
-
-	results = pk_client_get_updates (PK_CLIENT (task_updates),
-					 pk_bitfield_value (PK_FILTER_ENUM_NONE),
-					 cancellable,
-					 gs_packagekit_helper_cb, helper,
-					 error);
 
 	if (!gs_plugin_packagekit_results_valid (results, cancellable, error))
 		return FALSE;
@@ -820,16 +910,229 @@ gs_plugin_packagekit_add_updates (GsPlugin *plugin,
 	return TRUE;
 }
 
-gboolean
-gs_plugin_add_updates (GsPlugin *plugin,
-		       GsAppList *list,
-		       GCancellable *cancellable,
-		       GError **error)
+static gboolean
+gs_plugin_packagekit_add_updates (GsPlugin *plugin,
+				  GsAppList *list,
+				  GCancellable *cancellable,
+				  GError **error)
 {
+	g_autoptr(GsPackagekitHelper) helper = gs_packagekit_helper_new (plugin);
+	g_autoptr(PkTask) task_updates = NULL;
+	g_autoptr(PkResults) results = NULL;
+
+	/* do sync call */
+	gs_plugin_status_update (plugin, NULL, GS_PLUGIN_STATUS_WAITING);
+
+	task_updates = gs_packagekit_task_new (plugin);
+	gs_packagekit_task_setup (GS_PACKAGEKIT_TASK (task_updates), GS_PACKAGEKIT_TASK_QUESTION_TYPE_NONE, FALSE);
+	gs_packagekit_helper_set_allow_emit_updates_changed (helper, FALSE);
+
+	results = pk_client_get_updates (PK_CLIENT (task_updates),
+					 pk_bitfield_value (PK_FILTER_ENUM_NONE),
+					 cancellable,
+					 gs_packagekit_helper_cb, helper,
+					 error);
+
+	return gs_plugin_package_list_updates_process_results (plugin, results, list, cancellable, error);
+}
+
+static void
+gs_packagekit_list_updates_cb (GObject *source_object,
+			       GAsyncResult *result,
+			       gpointer user_data)
+{
+	g_autoptr(GTask) task = user_data;
+	g_autoptr(GsAppList) list = gs_app_list_new ();
+	g_autoptr(PkResults) results = NULL;
 	g_autoptr(GError) local_error = NULL;
-	if (!gs_plugin_packagekit_add_updates (plugin, list, cancellable, &local_error))
+
+	results = pk_client_generic_finish (PK_CLIENT (source_object), result, &local_error);
+	if (!gs_plugin_package_list_updates_process_results (GS_PLUGIN (g_task_get_source_object (task)), results, list,
+							     g_task_get_cancellable (task), &local_error)) {
 		g_debug ("Failed to get updates: %s", local_error->message);
+	}
+
+	/* only log about the errors, do not propagate them to the caller */
+	g_task_return_pointer (task, g_steal_pointer (&list), g_object_unref);
+}
+
+static gboolean
+gs_packagekit_add_updates_historical_sync (GsPlugin *plugin,
+					   GsAppList *list,
+					   GCancellable *cancellable,
+					   GError **error)
+{
+	guint64 mtime;
+	guint i;
+	g_autoptr(GPtrArray) package_array = NULL;
+	g_autoptr(GError) error_local = NULL;
+	g_autoptr(GSettings) settings = NULL;
+	g_autoptr(PkResults) results = NULL;
+	gboolean is_new_result;
+	PkExitEnum exit_code;
+
+	/* get the results */
+	results = pk_offline_get_results (&error_local);
+	if (results == NULL) {
+		/* was any offline update attempted */
+		if (g_error_matches (error_local,
+		                     PK_OFFLINE_ERROR,
+		                     PK_OFFLINE_ERROR_NO_DATA)) {
+			return TRUE;
+		}
+
+		gs_plugin_packagekit_error_convert (&error_local, cancellable);
+
+		g_set_error (error,
+		             GS_PLUGIN_ERROR,
+		             GS_PLUGIN_ERROR_INVALID_FORMAT,
+		             "Failed to get offline update results: %s",
+		             error_local->message);
+		return FALSE;
+	}
+
+	/* get the mtime of the results */
+	mtime = pk_offline_get_results_mtime (error);
+	if (mtime == 0) {
+		gs_plugin_packagekit_error_convert (error, cancellable);
+		return FALSE;
+	}
+
+	settings = g_settings_new ("org.gnome.software");
+	/* Two seconds precision */
+	is_new_result = mtime > g_settings_get_uint64 (settings, "packagekit-historical-updates-timestamp") + 2;
+	if (is_new_result)
+		g_settings_set_uint64 (settings, "packagekit-historical-updates-timestamp", mtime);
+
+	/* only return results if successful */
+	exit_code = pk_results_get_exit_code (results);
+	if (exit_code != PK_EXIT_ENUM_SUCCESS) {
+		g_autoptr(PkError) error_code = NULL;
+
+		error_code = pk_results_get_error_code (results);
+		if (error_code == NULL) {
+			g_set_error (error,
+			             GS_PLUGIN_ERROR,
+			             GS_PLUGIN_ERROR_FAILED,
+			             "Offline update failed without error_code set");
+			return FALSE;
+		}
+
+		/* Ignore previously shown errors */
+		if (!is_new_result)
+			return TRUE;
+
+		return gs_plugin_packagekit_convert_error (error,
+		                                           pk_error_get_code (error_code),
+		                                           pk_error_get_details (error_code),
+							   _("Failed to install updates: "));
+	}
+
+	/* distro upgrade? */
+	if (pk_results_get_role (results) == PK_ROLE_ENUM_UPGRADE_SYSTEM) {
+		g_autoptr(GsApp) app = NULL;
+
+		app = gs_app_new (NULL);
+		gs_app_set_from_unique_id (app, "*/*/*/system/*", AS_COMPONENT_KIND_GENERIC);
+		gs_app_set_management_plugin (app, plugin);
+		gs_app_add_quirk (app, GS_APP_QUIRK_IS_WILDCARD);
+		gs_app_set_state (app, GS_APP_STATE_UNKNOWN);
+		gs_app_set_kind (app, AS_COMPONENT_KIND_OPERATING_SYSTEM);
+		gs_app_set_bundle_kind (app, AS_BUNDLE_KIND_PACKAGE);
+		gs_app_set_install_date (app, mtime);
+		gs_app_set_metadata (app, "GnomeSoftware::Creator",
+				     gs_plugin_get_name (plugin));
+		gs_app_list_add (list, app);
+
+		return TRUE;
+	}
+
+	/* get list of package-ids */
+	package_array = pk_results_get_package_array (results);
+	for (i = 0; i < package_array->len; i++) {
+		PkPackage *pkg = g_ptr_array_index (package_array, i);
+		const gchar *package_id;
+		g_autoptr(GsApp) app = NULL;
+		g_auto(GStrv) split = NULL;
+
+		app = gs_app_new (NULL);
+		package_id = pk_package_get_id (pkg);
+		split = g_strsplit (package_id, ";", 4);
+		gs_plugin_packagekit_set_packaging_format (plugin, app);
+		gs_plugin_packagekit_set_package_name (app, pkg);
+		gs_app_add_source (app, split[0]);
+		gs_app_set_update_version (app, split[1]);
+		gs_app_set_management_plugin (app, plugin);
+		gs_app_add_source_id (app, package_id);
+		gs_app_set_state (app, GS_APP_STATE_UPDATABLE);
+		gs_app_set_kind (app, AS_COMPONENT_KIND_GENERIC);
+		gs_app_set_bundle_kind (app, AS_BUNDLE_KIND_PACKAGE);
+		gs_app_set_install_date (app, mtime);
+		gs_app_set_metadata (app, "GnomeSoftware::Creator",
+				     gs_plugin_get_name (plugin));
+		gs_app_list_add (list, app);
+	}
 	return TRUE;
+}
+
+static void
+gs_packagekit_list_sources_cb (GObject *source_object,
+			       GAsyncResult *result,
+			       gpointer user_data)
+{
+	g_autoptr(GTask) task = user_data;
+	g_autoptr(GsAppList) list = gs_app_list_new ();
+	g_autoptr(GMutexLocker) locker = NULL;
+	g_autoptr(PkResults) results = NULL;
+	g_autoptr(GPtrArray) array = NULL;
+	g_autoptr(GError) local_error = NULL;
+	GsPluginPackagekit *self = GS_PLUGIN_PACKAGEKIT (g_task_get_source_object (task));
+	GsPlugin *plugin = GS_PLUGIN (self);
+
+	results = pk_client_generic_finish (PK_CLIENT (source_object), result, &local_error);
+	if (local_error != NULL || !gs_plugin_packagekit_results_valid (results, g_task_get_cancellable (task), &local_error)) {
+		g_task_return_error (task, g_steal_pointer (&local_error));
+		return;
+	}
+	locker = g_mutex_locker_new (&self->cached_sources_mutex);
+	if (self->cached_sources == NULL)
+		self->cached_sources = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+	array = pk_results_get_repo_detail_array (results);
+	for (guint i = 0; i < array->len; i++) {
+		g_autoptr(GsApp) app = NULL;
+		PkRepoDetail *rd = g_ptr_array_index (array, i);
+		const gchar *id = pk_repo_detail_get_id (rd);
+		app = g_hash_table_lookup (self->cached_sources, id);
+		if (app == NULL) {
+			app = gs_app_new (id);
+			gs_app_set_management_plugin (app, plugin);
+			gs_app_set_kind (app, AS_COMPONENT_KIND_REPOSITORY);
+			gs_app_set_bundle_kind (app, AS_BUNDLE_KIND_PACKAGE);
+			gs_app_set_scope (app, AS_COMPONENT_SCOPE_SYSTEM);
+			gs_app_add_quirk (app, GS_APP_QUIRK_NOT_LAUNCHABLE);
+			gs_app_set_state (app, pk_repo_detail_get_enabled (rd) ?
+					  GS_APP_STATE_INSTALLED : GS_APP_STATE_AVAILABLE);
+			gs_app_set_name (app,
+					 GS_APP_QUALITY_HIGHEST,
+					 pk_repo_detail_get_description (rd));
+			gs_app_set_summary (app,
+					    GS_APP_QUALITY_HIGHEST,
+					    pk_repo_detail_get_description (rd));
+			gs_plugin_packagekit_set_packaging_format (plugin, app);
+			gs_app_set_metadata (app, "GnomeSoftware::SortKey", "300");
+			gs_app_set_origin_ui (app, _("Packages"));
+			g_hash_table_insert (self->cached_sources, g_strdup (id), app);
+			g_object_weak_ref (G_OBJECT (app), cached_sources_weak_ref_cb, self);
+		} else {
+			g_object_ref (app);
+			/* The repo-related apps are those installed; due to re-using
+			   cached app, make sure the list is populated from fresh data. */
+			gs_app_list_remove_all (gs_app_get_related (app));
+		}
+		gs_app_list_add (list, app);
+	}
+
+	g_task_return_pointer (task, g_steal_pointer (&list), g_object_unref);
 }
 
 static void list_apps_cb (GObject      *source_object,
@@ -848,13 +1151,41 @@ gs_plugin_packagekit_list_apps_async (GsPlugin              *plugin,
 	g_autoptr(GsPackagekitHelper) helper = gs_packagekit_helper_new (plugin);
 	g_autoptr(PkTask) task_list_apps = NULL;
 	g_autoptr(GsApp) app_dl = gs_app_new (gs_plugin_get_name (plugin));
+	const gchar *const *provides_files = NULL;
+	const gchar *provides_tag = NULL;
+	GsAppQueryProvidesType provides_type = GS_APP_QUERY_PROVIDES_UNKNOWN;
+	GsAppQueryTristate is_for_update = GS_APP_QUERY_TRISTATE_UNSET;
+	GsAppQueryTristate is_updates_historical = GS_APP_QUERY_TRISTATE_UNSET;
+	GsAppQueryTristate is_source = GS_APP_QUERY_TRISTATE_UNSET;
 	gboolean interactive = (flags & GS_PLUGIN_LIST_APPS_FLAGS_INTERACTIVE);
 	g_autoptr(GTask) task = NULL;
-	const gchar *provides_tag = NULL;
 
 	task = g_task_new (plugin, cancellable, callback, user_data);
 	g_task_set_source_tag (task, gs_plugin_packagekit_list_apps_async);
 	g_task_set_task_data (task, g_object_ref (helper), g_object_unref);
+
+	if (query != NULL) {
+		provides_files = gs_app_query_get_provides_files (query);
+		provides_type = gs_app_query_get_provides (query, &provides_tag);
+		is_for_update = gs_app_query_get_is_for_update (query);
+		is_updates_historical = gs_app_query_get_is_updates_historical (query);
+		is_source = gs_app_query_get_is_source (query);
+	}
+
+	/* Currently only support a subset of query properties, and only one set at once. */
+	if ((provides_files == NULL &&
+	     provides_tag == NULL &&
+	     is_for_update == GS_APP_QUERY_TRISTATE_UNSET &&
+	     is_updates_historical == GS_APP_QUERY_TRISTATE_UNSET &&
+	     is_source == GS_APP_QUERY_TRISTATE_UNSET) ||
+	    is_for_update == GS_APP_QUERY_TRISTATE_FALSE ||
+	    is_updates_historical == GS_APP_QUERY_TRISTATE_FALSE ||
+	    is_source == GS_APP_QUERY_TRISTATE_FALSE ||
+	    gs_app_query_get_n_properties_set (query) != 1) {
+		g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+					 "Unsupported query");
+		return;
+	}
 
 	gs_plugin_status_update (plugin, NULL, GS_PLUGIN_STATUS_WAITING);
 	gs_packagekit_helper_set_progress_app (helper, app_dl);
@@ -862,17 +1193,17 @@ gs_plugin_packagekit_list_apps_async (GsPlugin              *plugin,
 	task_list_apps = gs_packagekit_task_new (plugin);
 	gs_packagekit_task_setup (GS_PACKAGEKIT_TASK (task_list_apps), GS_PACKAGEKIT_TASK_QUESTION_TYPE_NONE, interactive);
 
-	if (gs_app_query_get_provides_files (query) != NULL) {
+	if (provides_files != NULL) {
 		filter = pk_bitfield_from_enums (PK_FILTER_ENUM_NEWEST,
 						 PK_FILTER_ENUM_ARCH,
 						 -1);
 		pk_client_search_files_async (PK_CLIENT (task_list_apps),
 					      filter,
-					      (gchar **) gs_app_query_get_provides_files (query),
+					      (gchar **) provides_files,
 					      cancellable,
 					      gs_packagekit_helper_cb, helper,
 					      list_apps_cb, g_steal_pointer (&task));
-	} else if (gs_app_query_get_provides (query, &provides_tag) != GS_APP_QUERY_PROVIDES_UNKNOWN) {
+	} else if (provides_type != GS_APP_QUERY_PROVIDES_UNKNOWN) {
 		const gchar * const provides_tag_strv[2] = { provides_tag, NULL };
 
 		filter = pk_bitfield_from_enums (PK_FILTER_ENUM_NEWEST,
@@ -885,9 +1216,32 @@ gs_plugin_packagekit_list_apps_async (GsPlugin              *plugin,
 					       cancellable,
 					       gs_packagekit_helper_cb, helper,
 					       list_apps_cb, g_steal_pointer (&task));
+	} else if (is_for_update == GS_APP_QUERY_TRISTATE_TRUE) {
+		gs_packagekit_helper_set_allow_emit_updates_changed (helper, FALSE);
+		pk_client_get_updates_async (PK_CLIENT (task_list_apps),
+					     pk_bitfield_value (PK_FILTER_ENUM_NONE),
+					     cancellable,
+					     gs_packagekit_helper_cb, helper,
+					     gs_packagekit_list_updates_cb, g_steal_pointer (&task));
+	} else if (is_updates_historical == GS_APP_QUERY_TRISTATE_TRUE) {
+		g_autoptr(GsAppList) list = gs_app_list_new ();
+		g_autoptr(GError) local_error = NULL;
+		if (gs_packagekit_add_updates_historical_sync (plugin, list, cancellable, &local_error))
+			g_task_return_pointer (task, g_steal_pointer (&list), g_object_unref);
+		else
+			g_task_return_error (task, g_steal_pointer (&local_error));
+	} else if (is_source == GS_APP_QUERY_TRISTATE_TRUE) {
+		/* ask PK for the repo details */
+		filter = pk_bitfield_from_enums (PK_FILTER_ENUM_NOT_SOURCE,
+						 PK_FILTER_ENUM_NOT_DEVELOPMENT,
+						 -1);
+		pk_client_get_repo_list_async (PK_CLIENT (task_list_apps),
+					       filter,
+					       cancellable,
+					       gs_packagekit_helper_cb, helper,
+					       gs_packagekit_list_sources_cb, g_steal_pointer (&task));
 	} else {
-		g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
-					 "Unsupported query");
+		g_assert_not_reached ();
 	}
 }
 
@@ -925,7 +1279,8 @@ static gboolean
 plugin_packagekit_pick_rpm_desktop_file_cb (GsPlugin *plugin,
 					    GsApp *app,
 					    const gchar *filename,
-					    GKeyFile *key_file)
+					    GKeyFile *key_file,
+					    gpointer user_data)
 {
 	return strstr (filename, "/snapd/") == NULL &&
 	       strstr (filename, "/snap/") == NULL &&
@@ -935,17 +1290,26 @@ plugin_packagekit_pick_rpm_desktop_file_cb (GsPlugin *plugin,
 	       !g_key_file_has_key (key_file, "Desktop Entry", "X-SnapInstanceName", NULL);
 }
 
-gboolean
-gs_plugin_launch (GsPlugin *plugin,
-		  GsApp *app,
-		  GCancellable *cancellable,
-		  GError **error)
+static void
+gs_plugin_packagekit_launch_async (GsPlugin            *plugin,
+				   GsApp               *app,
+				   GsPluginLaunchFlags  flags,
+				   GCancellable        *cancellable,
+				   GAsyncReadyCallback  callback,
+				   gpointer             user_data)
 {
-	/* only process this app if was created by this plugin */
-	if (!gs_app_has_management_plugin (app, plugin))
-		return TRUE;
+	gs_plugin_app_launch_filtered_async (plugin, app, flags,
+					     plugin_packagekit_pick_rpm_desktop_file_cb, NULL,
+					     cancellable,
+					     callback, user_data);
+}
 
-	return gs_plugin_app_launch_filtered (plugin, app, plugin_packagekit_pick_rpm_desktop_file_cb, NULL, error);
+static gboolean
+gs_plugin_packagekit_launch_finish (GsPlugin      *plugin,
+				    GAsyncResult  *result,
+				    GError       **error)
+{
+	return gs_plugin_app_launch_filtered_finish (plugin, result, error);
 }
 
 static void
@@ -979,8 +1343,9 @@ gs_plugin_packagekit_repo_list_changed_cb (PkControl *control, GsPlugin *plugin)
 	gs_plugin_packagekit_invoke_reload (plugin);
 }
 
-void
-gs_plugin_adopt_app (GsPlugin *plugin, GsApp *app)
+static void
+gs_plugin_packagekit_adopt_app (GsPlugin *plugin,
+				GsApp *app)
 {
 	if (gs_app_get_bundle_kind (app) == AS_BUNDLE_KIND_PACKAGE &&
 	    gs_app_get_scope (app) == AS_COMPONENT_SCOPE_SYSTEM) {
@@ -1466,12 +1831,13 @@ static void sources_related_got_installed_cb (GObject      *source_object,
 					      GAsyncResult *result,
 					      gpointer      user_data);
 static void
-gs_plugin_packagekit_refine_async (GsPlugin            *plugin,
-                                   GsAppList           *list,
-                                   GsPluginRefineFlags  flags,
-                                   GCancellable        *cancellable,
-                                   GAsyncReadyCallback  callback,
-                                   gpointer             user_data)
+gs_plugin_packagekit_refine_async (GsPlugin               *plugin,
+                                   GsAppList              *list,
+                                   GsPluginRefineJobFlags  job_flags,
+                                   GsPluginRefineFlags     refine_flags,
+                                   GCancellable           *cancellable,
+                                   GAsyncReadyCallback     callback,
+                                   gpointer                user_data)
 {
 	GsPluginPackagekit *self = GS_PLUGIN_PACKAGEKIT (plugin);
 	g_autoptr(GHashTable) resolve_list_apps = g_hash_table_new (NULL, NULL);
@@ -1502,7 +1868,7 @@ gs_plugin_packagekit_refine_async (GsPlugin            *plugin,
 	data->n_pending_operations = 1;  /* to prevent the task being completed before all operations have been started */
 	data->progress_datas = g_ptr_array_new_with_free_func ((GDestroyNotify) g_object_unref);
 	data->client_refine = pk_client_new ();
-	pk_client_set_interactive (data->client_refine, gs_plugin_has_flags (plugin, GS_PLUGIN_FLAGS_INTERACTIVE));
+	pk_client_set_interactive (data->client_refine, (job_flags & GS_PLUGIN_REFINE_JOB_FLAGS_INTERACTIVE) != 0);
 	g_task_set_task_data (task, g_steal_pointer (&data), (GDestroyNotify) refine_data_free);
 
 	/* Process the @list and work out what information is needed for each
@@ -1535,9 +1901,9 @@ gs_plugin_packagekit_refine_async (GsPlugin            *plugin,
 		if (sources->len > 0 &&
 		    gs_plugin_packagekit_refine_valid_package_name (g_ptr_array_index (sources, 0)) &&
 		    (gs_app_get_state (app) == GS_APP_STATE_UNKNOWN ||
-		     gs_plugin_refine_requires_package_id (app, flags) ||
-		     gs_plugin_refine_requires_origin (app, flags) ||
-		     gs_plugin_refine_requires_version (app, flags))) {
+		     gs_plugin_refine_requires_package_id (app, refine_flags) ||
+		     gs_plugin_refine_requires_origin (app, refine_flags) ||
+		     gs_plugin_refine_requires_version (app, refine_flags))) {
 			g_hash_table_add (resolve_list_apps, app);
 			gs_app_list_add (resolve_list, app);
 		}
@@ -1545,16 +1911,16 @@ gs_plugin_packagekit_refine_async (GsPlugin            *plugin,
 		if ((gs_app_get_state (app) == GS_APP_STATE_UPDATABLE ||
 		     gs_app_get_state (app) == GS_APP_STATE_UNKNOWN) &&
 		    gs_app_get_source_id_default (app) != NULL &&
-		    gs_plugin_refine_requires_update_details (app, flags)) {
+		    gs_plugin_refine_requires_update_details (app, refine_flags)) {
 			gs_app_list_add (update_details_list, app);
 		}
 
 		if (gs_app_get_source_id_default (app) != NULL &&
-		    gs_plugin_refine_app_needs_details (flags, app)) {
+		    gs_plugin_refine_app_needs_details (refine_flags, app)) {
 			gs_app_list_add (details_list, app);
 		}
 
-		if ((flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_HISTORY) != 0 &&
+		if ((refine_flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_HISTORY) != 0 &&
 		    sources->len > 0 &&
 		    gs_app_get_install_date (app) == 0) {
 			gs_app_list_add (history_list, app);
@@ -1562,7 +1928,7 @@ gs_plugin_packagekit_refine_async (GsPlugin            *plugin,
 	}
 
 	/* Add sources' related apps only when refining sources and nothing else */
-	if ((flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_RELATED) != 0 &&
+	if ((refine_flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_RELATED) != 0 &&
 	    n_considered > 0 && gs_app_list_length (repos_list) == n_considered) {
 		PkBitfield filter;
 		g_autoptr(GsPackagekitHelper) helper = gs_packagekit_helper_new (plugin);
@@ -1584,7 +1950,7 @@ gs_plugin_packagekit_refine_async (GsPlugin            *plugin,
 
 	/* re-read /var/lib/PackageKit/prepared-update so we know what packages
 	 * to mark as already downloaded and prepared for offline updates */
-	if ((flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_SIZE) &&
+	if ((refine_flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_SIZE) &&
 	    !gs_plugin_systemd_update_cache (self, cancellable, &local_error)) {
 		refine_task_complete_operation_with_error (task, g_steal_pointer (&local_error));
 		return;
@@ -1593,7 +1959,7 @@ gs_plugin_packagekit_refine_async (GsPlugin            *plugin,
 	/* when we need the cannot-be-upgraded applications, we implement this
 	 * by doing a UpgradeSystem(SIMULATE) which adds the removed packages
 	 * to the related-apps list with a state of %GS_APP_STATE_UNAVAILABLE */
-	if (flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_UPGRADE_REMOVED) {
+	if ((refine_flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_UPGRADE_REMOVED) != 0) {
 		for (guint i = 0; i < gs_app_list_length (list); i++) {
 			GsApp *app = gs_app_list_index (list, i);
 			g_autoptr(GsPackagekitHelper) helper = gs_packagekit_helper_new (plugin);
@@ -1613,7 +1979,7 @@ gs_plugin_packagekit_refine_async (GsPlugin            *plugin,
 			/* ask PK to simulate upgrading the system */
 			cache_age_save = pk_client_get_cache_age (data_unowned->client_refine);
 			pk_client_set_cache_age (data_unowned->client_refine, 60 * 60 * 24 * 7); /* once per week */
-			pk_client_set_interactive (data_unowned->client_refine, gs_plugin_has_flags (plugin, GS_PLUGIN_FLAGS_INTERACTIVE));
+			pk_client_set_interactive (data_unowned->client_refine, (job_flags & GS_PLUGIN_REFINE_JOB_FLAGS_INTERACTIVE) != 0);
 			pk_client_upgrade_system_async (data_unowned->client_refine,
 							pk_bitfield_from_enums (PK_TRANSACTION_FLAG_ENUM_SIMULATE, -1),
 							gs_app_get_version (app),
@@ -1653,7 +2019,7 @@ gs_plugin_packagekit_refine_async (GsPlugin            *plugin,
 	}
 
 	/* set the package-id for an installed desktop file */
-	if ((flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_SETUP_ACTION) != 0) {
+	if ((refine_flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_SETUP_ACTION) != 0) {
 		g_autoptr(GPtrArray) to_array = g_ptr_array_new_with_free_func (g_free);
 		g_autoptr(GHashTable) source_to_app = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, g_object_unref);
 		g_autoptr(GsPackagekitHelper) helper = NULL;
@@ -1847,7 +2213,7 @@ gs_plugin_packagekit_refine_async (GsPlugin            *plugin,
 	}
 
 	/* get the update severity */
-	if ((flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_UPDATE_SEVERITY) != 0) {
+	if ((refine_flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_UPDATE_SEVERITY) != 0) {
 		PkBitfield filter;
 		g_autoptr(GsPackagekitHelper) helper = gs_packagekit_helper_new (plugin);
 
@@ -2391,7 +2757,7 @@ gs_plugin_packagekit_auto_prepare_update_thread (GTask *task,
 	GsPluginPackagekit *self = GS_PLUGIN_PACKAGEKIT (source_object);
 	g_autoptr(GsAppList) list = NULL;
 	g_autoptr(GError) local_error = NULL;
-	gboolean interactive = gs_plugin_has_flags (GS_PLUGIN (self), GS_PLUGIN_FLAGS_INTERACTIVE);
+	gboolean interactive = FALSE; /* this is done in the background, thus not interactive */
 
 	list = gs_app_list_new ();
 	if (!gs_plugin_packagekit_add_updates (GS_PLUGIN (self), list, cancellable, &local_error)) {
@@ -2847,6 +3213,7 @@ static gboolean
 gs_plugin_packagekit_refresh_guess_app_id (GsPluginPackagekit  *self,
                                            GsApp               *app,
                                            const gchar         *filename,
+                                           gboolean             interactive,
                                            GCancellable        *cancellable,
                                            GError             **error)
 {
@@ -2863,7 +3230,7 @@ gs_plugin_packagekit_refresh_guess_app_id (GsPluginPackagekit  *self,
 	gs_packagekit_helper_add_app (helper, app);
 
 	task_local = gs_packagekit_task_new (plugin);
-	gs_packagekit_task_setup (GS_PACKAGEKIT_TASK (task_local), GS_PACKAGEKIT_TASK_QUESTION_TYPE_NONE, gs_plugin_has_flags (plugin, GS_PLUGIN_FLAGS_INTERACTIVE));
+	gs_packagekit_task_setup (GS_PACKAGEKIT_TASK (task_local), GS_PACKAGEKIT_TASK_QUESTION_TYPE_NONE, interactive);
 
 	results = pk_client_get_files_local (PK_CLIENT (task_local),
 					     files,
@@ -2968,12 +3335,13 @@ gs_plugin_packagekit_local_check_installed (GsPluginPackagekit  *self,
 	return TRUE;
 }
 
-gboolean
-gs_plugin_file_to_app (GsPlugin *plugin,
-		       GsAppList *list,
-		       GFile *file,
-		       GCancellable *cancellable,
-		       GError **error)
+static gboolean
+gs_plugin_packagekit_file_to_app_sync (GsPlugin *plugin,
+				       GFile *file,
+				       GsAppList *list,
+				       GsPluginFileToAppFlags flags,
+				       GCancellable *cancellable,
+				       GError **error)
 {
 	GsPluginPackagekit *self = GS_PLUGIN_PACKAGEKIT (plugin);
 	const gchar *package_id;
@@ -2988,6 +3356,7 @@ gs_plugin_file_to_app (GsPlugin *plugin,
 	g_auto(GStrv) split = NULL;
 	g_autoptr(GPtrArray) array = NULL;
 	g_autoptr(GsApp) app = NULL;
+	gboolean interactive = (flags & GS_PLUGIN_FILE_TO_APP_FLAGS_INTERACTIVE) != 0;
 	const gchar *mimetypes[] = {
 		"application/x-app-package",
 		"application/x-deb",
@@ -3009,7 +3378,7 @@ gs_plugin_file_to_app (GsPlugin *plugin,
 
 	task_local = gs_packagekit_task_new (plugin);
 	pk_client_set_cache_age (PK_CLIENT (task_local), G_MAXUINT);
-	gs_packagekit_task_setup (GS_PACKAGEKIT_TASK (task_local), GS_PACKAGEKIT_TASK_QUESTION_TYPE_NONE, gs_plugin_has_flags (plugin, GS_PLUGIN_FLAGS_INTERACTIVE));
+	gs_packagekit_task_setup (GS_PACKAGEKIT_TASK (task_local), GS_PACKAGEKIT_TASK_QUESTION_TYPE_NONE, interactive);
 
 	results = pk_client_get_details_local (PK_CLIENT (task_local),
 					       files,
@@ -3099,6 +3468,7 @@ gs_plugin_file_to_app (GsPlugin *plugin,
 	if (!gs_plugin_packagekit_refresh_guess_app_id (self,
 							app,
 							filename,
+							interactive,
 							cancellable,
 							error))
 		return FALSE;
@@ -3107,246 +3477,80 @@ gs_plugin_file_to_app (GsPlugin *plugin,
 	return TRUE;
 }
 
-static gboolean
-gs_plugin_packagekit_convert_error (GError **error,
-				    PkErrorEnum error_enum,
-				    const gchar *details,
-				    const gchar *prefix)
+static void
+gs_plugin_packagekit_file_to_app_thread (GTask *task,
+					 gpointer source_object,
+					 gpointer task_data,
+					 GCancellable *cancellable)
 {
-	switch (error_enum) {
-	case PK_ERROR_ENUM_PACKAGE_DOWNLOAD_FAILED:
-	case PK_ERROR_ENUM_NO_CACHE:
-	case PK_ERROR_ENUM_NO_NETWORK:
-	case PK_ERROR_ENUM_NO_MORE_MIRRORS_TO_TRY:
-	case PK_ERROR_ENUM_CANNOT_FETCH_SOURCES:
-	case PK_ERROR_ENUM_UNFINISHED_TRANSACTION:
-		g_set_error_literal (error,
-				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_NO_NETWORK,
-				     details);
-		break;
-	case PK_ERROR_ENUM_BAD_GPG_SIGNATURE:
-	case PK_ERROR_ENUM_CANNOT_UPDATE_REPO_UNSIGNED:
-	case PK_ERROR_ENUM_GPG_FAILURE:
-	case PK_ERROR_ENUM_MISSING_GPG_SIGNATURE:
-	case PK_ERROR_ENUM_PACKAGE_CORRUPT:
-		g_set_error_literal (error,
-				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_NO_SECURITY,
-				     details);
-		break;
-	case PK_ERROR_ENUM_TRANSACTION_CANCELLED:
-		g_set_error_literal (error,
-				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_CANCELLED,
-				     details);
-		break;
-	case PK_ERROR_ENUM_NO_PACKAGES_TO_UPDATE:
-	case PK_ERROR_ENUM_UPDATE_NOT_FOUND:
-		g_set_error_literal (error,
-				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_NOT_SUPPORTED,
-				     details);
-		break;
-	case PK_ERROR_ENUM_NO_SPACE_ON_DEVICE:
-		g_set_error_literal (error,
-				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_NO_SPACE,
-				     details);
-		break;
-	default:
-		g_set_error_literal (error,
-				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_FAILED,
-				     details);
-		break;
-	}
-	if (prefix != NULL)
-		g_prefix_error_literal (error, prefix);
-	return FALSE;
+	g_autoptr(GsAppList) list = gs_app_list_new ();
+	g_autoptr(GError) local_error = NULL;
+	GsPlugin *plugin = GS_PLUGIN (source_object);
+	GsPluginFileToAppData *data = task_data;
+
+	if (gs_plugin_packagekit_file_to_app_sync (plugin, data->file, list, data->flags, cancellable, &local_error))
+		g_task_return_pointer (task, g_steal_pointer (&list), g_object_unref);
+	else if (local_error != NULL)
+		g_task_return_error (task, g_steal_pointer (&local_error));
+	else
+		g_task_return_pointer (task, gs_app_list_new (), g_object_unref);
 }
 
-gboolean
-gs_plugin_add_updates_historical (GsPlugin *plugin,
-				  GsAppList *list,
-				  GCancellable *cancellable,
-				  GError **error)
+static void
+gs_plugin_packagekit_file_to_app_async (GsPlugin *plugin,
+					GFile *file,
+					GsPluginFileToAppFlags flags,
+					GCancellable *cancellable,
+					GAsyncReadyCallback callback,
+					gpointer user_data)
 {
-	guint64 mtime;
-	guint i;
-	g_autoptr(GPtrArray) package_array = NULL;
-	g_autoptr(GError) error_local = NULL;
-	g_autoptr(GSettings) settings = NULL;
-	g_autoptr(PkResults) results = NULL;
-	gboolean is_new_result;
-	PkExitEnum exit_code;
+	g_autoptr(GTask) task = NULL;
 
-	/* get the results */
-	results = pk_offline_get_results (&error_local);
-	if (results == NULL) {
-		/* was any offline update attempted */
-		if (g_error_matches (error_local,
-		                     PK_OFFLINE_ERROR,
-		                     PK_OFFLINE_ERROR_NO_DATA)) {
-			return TRUE;
-		}
-
-		gs_plugin_packagekit_error_convert (&error_local, cancellable);
-
-		g_set_error (error,
-		             GS_PLUGIN_ERROR,
-		             GS_PLUGIN_ERROR_INVALID_FORMAT,
-		             "Failed to get offline update results: %s",
-		             error_local->message);
-		return FALSE;
-	}
-
-	/* get the mtime of the results */
-	mtime = pk_offline_get_results_mtime (error);
-	if (mtime == 0) {
-		gs_plugin_packagekit_error_convert (error, cancellable);
-		return FALSE;
-	}
-
-	settings = g_settings_new ("org.gnome.software");
-	/* Two seconds precision */
-	is_new_result = mtime > g_settings_get_uint64 (settings, "packagekit-historical-updates-timestamp") + 2;
-	if (is_new_result)
-		g_settings_set_uint64 (settings, "packagekit-historical-updates-timestamp", mtime);
-
-	/* only return results if successful */
-	exit_code = pk_results_get_exit_code (results);
-	if (exit_code != PK_EXIT_ENUM_SUCCESS) {
-		g_autoptr(PkError) error_code = NULL;
-
-		error_code = pk_results_get_error_code (results);
-		if (error_code == NULL) {
-			g_set_error (error,
-			             GS_PLUGIN_ERROR,
-			             GS_PLUGIN_ERROR_FAILED,
-			             "Offline update failed without error_code set");
-			return FALSE;
-		}
-
-		/* Ignore previously shown errors */
-		if (!is_new_result)
-			return TRUE;
-
-		return gs_plugin_packagekit_convert_error (error,
-		                                           pk_error_get_code (error_code),
-		                                           pk_error_get_details (error_code),
-							   _("Failed to install updates: "));
-	}
-
-	/* distro upgrade? */
-	if (pk_results_get_role (results) == PK_ROLE_ENUM_UPGRADE_SYSTEM) {
-		g_autoptr(GsApp) app = NULL;
-
-		app = gs_app_new (NULL);
-		gs_app_set_from_unique_id (app, "*/*/*/system/*", AS_COMPONENT_KIND_GENERIC);
-		gs_app_set_management_plugin (app, plugin);
-		gs_app_add_quirk (app, GS_APP_QUIRK_IS_WILDCARD);
-		gs_app_set_state (app, GS_APP_STATE_UNKNOWN);
-		gs_app_set_kind (app, AS_COMPONENT_KIND_OPERATING_SYSTEM);
-		gs_app_set_bundle_kind (app, AS_BUNDLE_KIND_PACKAGE);
-		gs_app_set_install_date (app, mtime);
-		gs_app_set_metadata (app, "GnomeSoftware::Creator",
-				     gs_plugin_get_name (plugin));
-		gs_app_list_add (list, app);
-
-		return TRUE;
-	}
-
-	/* get list of package-ids */
-	package_array = pk_results_get_package_array (results);
-	for (i = 0; i < package_array->len; i++) {
-		PkPackage *pkg = g_ptr_array_index (package_array, i);
-		const gchar *package_id;
-		g_autoptr(GsApp) app = NULL;
-		g_auto(GStrv) split = NULL;
-
-		app = gs_app_new (NULL);
-		package_id = pk_package_get_id (pkg);
-		split = g_strsplit (package_id, ";", 4);
-		gs_plugin_packagekit_set_packaging_format (plugin, app);
-		gs_plugin_packagekit_set_package_name (app, pkg);
-		gs_app_add_source (app, split[0]);
-		gs_app_set_update_version (app, split[1]);
-		gs_app_set_management_plugin (app, plugin);
-		gs_app_add_source_id (app, package_id);
-		gs_app_set_state (app, GS_APP_STATE_UPDATABLE);
-		gs_app_set_kind (app, AS_COMPONENT_KIND_GENERIC);
-		gs_app_set_bundle_kind (app, AS_BUNDLE_KIND_PACKAGE);
-		gs_app_set_install_date (app, mtime);
-		gs_app_set_metadata (app, "GnomeSoftware::Creator",
-				     gs_plugin_get_name (plugin));
-		gs_app_list_add (list, app);
-	}
-	return TRUE;
+	task = gs_plugin_file_to_app_data_new_task (plugin, file, flags, cancellable, callback, user_data);
+	g_task_set_source_tag (task, gs_plugin_packagekit_file_to_app_async);
+	g_task_run_in_thread (task, gs_plugin_packagekit_file_to_app_thread);
 }
 
-gboolean
-gs_plugin_url_to_app (GsPlugin *plugin,
-		      GsAppList *list,
-		      const gchar *url,
-		      GCancellable *cancellable,
-		      GError **error)
+static GsAppList *
+gs_plugin_packagekit_file_to_app_finish (GsPlugin      *plugin,
+					 GAsyncResult  *result,
+					 GError       **error)
 {
-	GsPluginPackagekit *self = GS_PLUGIN_PACKAGEKIT (plugin);
-	g_autofree gchar *scheme = NULL;
+	return g_task_propagate_pointer (G_TASK (result), error);
+}
+
+static void
+gs_plugin_packagekit_url_to_app_resolved_cb (GObject *source_object,
+					     GAsyncResult *result,
+					     gpointer user_data)
+{
+	g_autoptr(GTask) task = user_data;
+	GsPluginPackagekit *self = GS_PLUGIN_PACKAGEKIT (g_task_get_source_object (task));
+	GsPluginUrlToAppData *data = g_task_get_task_data (task);
+	GsPlugin *plugin = GS_PLUGIN (self);
 	g_autofree gchar *path = NULL;
-	const gchar *id = NULL;
-	const gchar * const *id_like = NULL;
-	g_auto(GStrv) package_ids = NULL;
 	g_autoptr(PkResults) results = NULL;
 	g_autoptr(GsApp) app = NULL;
-	g_autoptr(GsOsRelease) os_release = NULL;
+	g_autoptr(GsAppList) list = NULL;
 	g_autoptr(GPtrArray) packages = NULL;
 	g_autoptr(GPtrArray) details = NULL;
-	g_autoptr(GsPackagekitHelper) helper = gs_packagekit_helper_new (plugin);
-	g_autoptr(PkClient) client_url_to_app = NULL;
+	g_autoptr(GError) local_error = NULL;
 
-	path = gs_utils_get_url_path (url);
-
-	/* only do this for apt:// on debian or debian-like distros */
-	os_release = gs_os_release_new (error);
-	if (os_release == NULL) {
-		g_prefix_error (error, "failed to determine OS information:");
-		return FALSE;
-	} else  {
-		id = gs_os_release_get_id (os_release);
-		id_like = gs_os_release_get_id_like (os_release);
-		scheme = gs_utils_get_url_scheme (url);
-		if (!(g_strcmp0 (scheme, "apt") == 0 &&
-		     (g_strcmp0 (id, "debian") == 0 ||
-		      g_strv_contains (id_like, "debian")))) {
-			return TRUE;
-		}
+	results = pk_client_generic_finish (PK_CLIENT (source_object), result, &local_error);
+	if (local_error != NULL || !gs_plugin_packagekit_results_valid (results, g_task_get_cancellable (task), &local_error)) {
+		g_prefix_error (&local_error, "failed to resolve package_ids: ");
+		gs_plugin_packagekit_error_convert (&local_error, g_task_get_cancellable (task));
+		g_task_return_error (task, g_steal_pointer (&local_error));
+		return;
 	}
 
+	path = gs_utils_get_url_path (data->url);
+	list = gs_app_list_new ();
 	app = gs_app_new (NULL);
 	gs_plugin_packagekit_set_packaging_format (plugin, app);
 	gs_app_add_source (app, path);
 	gs_app_set_kind (app, AS_COMPONENT_KIND_GENERIC);
 	gs_app_set_bundle_kind (app, AS_BUNDLE_KIND_PACKAGE);
-
-	package_ids = g_new0 (gchar *, 2);
-	package_ids[0] = g_strdup (path);
-
-	client_url_to_app = pk_client_new ();
-	pk_client_set_interactive (client_url_to_app, gs_plugin_has_flags (plugin, GS_PLUGIN_FLAGS_INTERACTIVE));
-
-	results = pk_client_resolve (client_url_to_app,
-				     pk_bitfield_from_enums (PK_FILTER_ENUM_NEWEST, PK_FILTER_ENUM_ARCH, -1),
-				     package_ids,
-				     cancellable,
-				     gs_packagekit_helper_cb, helper,
-				     error);
-
-	if (!gs_plugin_packagekit_results_valid (results, cancellable, error)) {
-		g_prefix_error (error, "failed to resolve package_ids: ");
-		return FALSE;
-	}
 
 	/* get results */
 	packages = pk_results_get_package_array (results);
@@ -3356,24 +3560,86 @@ gs_plugin_url_to_app (GsPlugin *plugin,
 		g_autoptr(GHashTable) details_collection = NULL;
 		g_autoptr(GHashTable) prepared_updates = NULL;
 
-		if (gs_app_get_local_file (app) != NULL)
-			return TRUE;
+		if (gs_app_get_local_file (app) == NULL) {
+			details_collection = gs_plugin_packagekit_details_array_to_hash (details);
 
-		details_collection = gs_plugin_packagekit_details_array_to_hash (details);
+			g_mutex_lock (&self->prepared_updates_mutex);
+			prepared_updates = g_hash_table_ref (self->prepared_updates);
+			g_mutex_unlock (&self->prepared_updates_mutex);
 
-		g_mutex_lock (&self->prepared_updates_mutex);
-		prepared_updates = g_hash_table_ref (self->prepared_updates);
-		g_mutex_unlock (&self->prepared_updates_mutex);
-
-		gs_plugin_packagekit_resolve_packages_app (GS_PLUGIN (self), packages, app);
-		gs_plugin_packagekit_refine_details_app (plugin, details_collection, prepared_updates, app);
+			gs_plugin_packagekit_resolve_packages_app (plugin, packages, app);
+			gs_plugin_packagekit_refine_details_app (plugin, details_collection, prepared_updates, app);
+		}
 
 		gs_app_list_add (list, app);
 	} else {
 		g_warning ("no results returned");
 	}
 
-	return TRUE;
+	g_task_return_pointer (task, g_steal_pointer (&list), g_object_unref);
+}
+
+static void
+gs_plugin_packagekit_url_to_app_async (GsPlugin *plugin,
+				       const gchar *url,
+				       GsPluginUrlToAppFlags flags,
+				       GCancellable *cancellable,
+				       GAsyncReadyCallback callback,
+				       gpointer user_data)
+{
+	g_auto(GStrv) package_ids = NULL;
+	g_autoptr(GsOsRelease) os_release = NULL;
+	g_autoptr(GsPackagekitHelper) helper = NULL;
+	g_autoptr(PkClient) client_url_to_app = NULL;
+	g_autoptr(GTask) task = NULL;
+	g_autoptr(GError) local_error = NULL;
+
+	task = gs_plugin_url_to_app_data_new_task (plugin, url, flags, cancellable, callback, user_data);
+	g_task_set_source_tag (task, gs_plugin_packagekit_url_to_app_async);
+
+	/* only do this for apt:// on debian or debian-like distros */
+	os_release = gs_os_release_new (&local_error);
+	if (os_release == NULL) {
+		g_prefix_error_literal (&local_error, "failed to determine OS information:");
+		g_task_return_error (task, g_steal_pointer (&local_error));
+		return;
+	} else  {
+		const gchar *id = NULL;
+		const gchar * const *id_like = NULL;
+		g_autofree gchar *scheme = NULL;
+		id = gs_os_release_get_id (os_release);
+		id_like = gs_os_release_get_id_like (os_release);
+		scheme = gs_utils_get_url_scheme (url);
+		if (!(g_strcmp0 (scheme, "apt") == 0 &&
+		     (g_strcmp0 (id, "debian") == 0 ||
+		      g_strv_contains (id_like, "debian")))) {
+			g_task_return_pointer (task, gs_app_list_new (), g_object_unref);
+			return;
+		}
+	}
+
+	package_ids = g_new0 (gchar *, 2);
+	package_ids[0] = gs_utils_get_url_path (url);
+
+	client_url_to_app = pk_client_new ();
+	helper = gs_packagekit_helper_new (plugin);
+	pk_client_set_interactive (client_url_to_app, (flags & GS_PLUGIN_URL_TO_APP_FLAGS_INTERACTIVE) != 0);
+	g_object_set_data_full (G_OBJECT (helper), "gs-plugin-packagekit-helper", helper, g_object_unref);
+
+	pk_client_resolve_async (client_url_to_app,
+				 pk_bitfield_from_enums (PK_FILTER_ENUM_NEWEST, PK_FILTER_ENUM_ARCH, -1),
+				 package_ids,
+				 cancellable,
+				 gs_packagekit_helper_cb, g_steal_pointer (&helper),
+				 gs_plugin_packagekit_url_to_app_resolved_cb, g_steal_pointer (&task));
+}
+
+static GsAppList *
+gs_plugin_packagekit_url_to_app_finish (GsPlugin      *plugin,
+					GAsyncResult  *result,
+					GError       **error)
+{
+	return g_task_propagate_pointer (G_TASK (result), error);
 }
 
 static gchar *
@@ -3683,23 +3949,60 @@ proxy_changed_reload_proxy_settings_cb (GObject      *source_object,
 		g_warning ("Failed to set proxies: %s", local_error->message);
 }
 
-gboolean
-gs_plugin_app_upgrade_download (GsPlugin *plugin,
-				GsApp *app,
-				GCancellable *cancellable,
-				GError **error)
+static void
+gs_packagekit_upgrade_system_cb (GObject *source_object,
+				 GAsyncResult *result,
+				 gpointer user_data)
 {
-	g_autoptr(GsPackagekitHelper) helper = gs_packagekit_helper_new (plugin);
-	g_autoptr(PkTask) task_upgrade = NULL;
+	g_autoptr(GTask) task = user_data;
 	g_autoptr(PkResults) results = NULL;
+	g_autoptr(GError) local_error = NULL;
+	GsPluginUpgradeDownloadData *data = g_task_get_task_data (task);
+
+	results = pk_client_generic_finish (PK_CLIENT (source_object), result, &local_error);
+
+	if (local_error != NULL || !gs_plugin_packagekit_results_valid (results, g_task_get_cancellable (task), &local_error)) {
+		gs_app_set_state_recover (data->app);
+		gs_plugin_packagekit_error_convert (&local_error, g_task_get_cancellable (task));
+		g_task_return_error (task, g_steal_pointer (&local_error));
+		return;
+	}
+
+	/* state is known */
+	gs_app_set_state (data->app, GS_APP_STATE_UPDATABLE);
+
+	g_task_return_boolean (task, TRUE);
+}
+
+static void
+gs_plugin_packagekit_upgrade_download_async (GsPlugin                    *plugin,
+                                             GsApp                       *app,
+                                             GsPluginUpgradeDownloadFlags flags,
+                                             GCancellable                *cancellable,
+                                             GAsyncReadyCallback          callback,
+                                             gpointer                     user_data)
+{
+	g_autoptr(GsPackagekitHelper) helper = NULL;
+	g_autoptr(PkTask) task_upgrade = NULL;
+	g_autoptr(GTask) task = NULL;
+	gboolean interactive = (flags & GS_PLUGIN_UPGRADE_DOWNLOAD_FLAGS_INTERACTIVE) != 0;
+
+	task = gs_plugin_upgrade_download_data_new_task (plugin, app, flags, cancellable, callback, user_data);
+	g_task_set_source_tag (task, gs_plugin_packagekit_upgrade_download_async);
 
 	/* only process this app if was created by this plugin */
-	if (!gs_app_has_management_plugin (app, plugin))
-		return TRUE;
+	if (!gs_app_has_management_plugin (app, plugin)) {
+		g_task_return_boolean (task, TRUE);
+		return;
+	}
 
 	/* check is distro-upgrade */
-	if (gs_app_get_kind (app) != AS_COMPONENT_KIND_OPERATING_SYSTEM)
-		return TRUE;
+	if (gs_app_get_kind (app) != AS_COMPONENT_KIND_OPERATING_SYSTEM) {
+		g_task_return_boolean (task, TRUE);
+		return;
+	}
+
+	helper = gs_packagekit_helper_new (plugin);
 
 	/* ask PK to download enough packages to upgrade the system */
 	gs_app_set_state (app, GS_APP_STATE_DOWNLOADING);
@@ -3708,23 +4011,24 @@ gs_plugin_app_upgrade_download (GsPlugin *plugin,
 	task_upgrade = gs_packagekit_task_new (plugin);
 	pk_task_set_only_download (task_upgrade, TRUE);
 	pk_client_set_cache_age (PK_CLIENT (task_upgrade), 60 * 60 * 24);
-	gs_packagekit_task_setup (GS_PACKAGEKIT_TASK (task_upgrade), GS_PACKAGEKIT_TASK_QUESTION_TYPE_DOWNLOAD, gs_plugin_has_flags (plugin, GS_PLUGIN_FLAGS_INTERACTIVE));
+	gs_packagekit_task_setup (GS_PACKAGEKIT_TASK (task_upgrade), GS_PACKAGEKIT_TASK_QUESTION_TYPE_DOWNLOAD, interactive);
+	gs_packagekit_task_take_helper (GS_PACKAGEKIT_TASK (task_upgrade), helper);
 
-	results = pk_task_upgrade_system_sync (task_upgrade,
-					       gs_app_get_version (app),
-					       PK_UPGRADE_KIND_ENUM_COMPLETE,
-					       cancellable,
-					       gs_packagekit_helper_cb, helper,
-					       error);
+	pk_task_upgrade_system_async (task_upgrade,
+				      gs_app_get_version (app),
+				      PK_UPGRADE_KIND_ENUM_COMPLETE,
+				      cancellable,
+				      gs_packagekit_helper_cb, g_steal_pointer (&helper),
+				      gs_packagekit_upgrade_system_cb,
+				      g_steal_pointer (&task));
+}
 
-	if (!gs_plugin_packagekit_results_valid (results, cancellable, error)) {
-		gs_app_set_state_recover (app);
-		return FALSE;
-	}
-
-	/* state is known */
-	gs_app_set_state (app, GS_APP_STATE_UPDATABLE);
-	return TRUE;
+static gboolean
+gs_plugin_packagekit_upgrade_download_finish (GsPlugin      *plugin,
+                                              GAsyncResult  *result,
+                                              GError       **error)
+{
+	return g_task_propagate_boolean (G_TASK (result), error);
 }
 
 static void gs_plugin_packagekit_refresh_metadata_async (GsPlugin                     *plugin,
@@ -4104,7 +4408,8 @@ download_get_updates_cb (GObject      *source_object,
 		if (local_error->domain == PK_CLIENT_ERROR) {
 			g_autoptr(GsPluginEvent) event = NULL;
 
-			event = gs_plugin_event_new ("error", local_error,
+			event = gs_plugin_event_new ("action", GS_PLUGIN_ACTION_GET_UPDATES,
+						     "error", local_error,
 						     NULL);
 			gs_plugin_event_add_flag (event, GS_PLUGIN_EVENT_FLAG_WARNING);
 			if (data->interactive)
@@ -4163,7 +4468,8 @@ download_update_packages_cb (GObject      *source_object,
 		if (local_error->domain == PK_CLIENT_ERROR) {
 			g_autoptr(GsPluginEvent) event = NULL;
 
-			event = gs_plugin_event_new ("error", local_error,
+			event = gs_plugin_event_new ("action", GS_PLUGIN_ACTION_GET_UPDATES,
+						     "error", local_error,
 						     NULL);
 			gs_plugin_event_add_flag (event, GS_PLUGIN_EVENT_FLAG_WARNING);
 			if (data->interactive)
@@ -4442,62 +4748,124 @@ gs_plugin_packagekit_refresh_metadata_finish (GsPlugin      *plugin,
 	return g_task_propagate_boolean (G_TASK (result), error);
 }
 
-gboolean
-gs_plugin_update_cancel (GsPlugin *plugin,
-			 GsApp *app,
-			 GCancellable *cancellable,
-			 GError **error)
+static void
+gs_packagekit_update_cancel_thread (GTask *task,
+				    gpointer source_object,
+				    gpointer task_data,
+				    GCancellable *cancellable)
 {
-	GsPluginPackagekit *self = GS_PLUGIN_PACKAGEKIT (plugin);
-	gboolean interactive = gs_plugin_has_flags (plugin, GS_PLUGIN_FLAGS_INTERACTIVE);
-
-	/* only process this app if was created by this plugin */
-	if (!gs_app_has_management_plugin (app, plugin))
-		return TRUE;
-
-	/* already in correct state */
-	if (!self->is_triggered)
-		return TRUE;
+	GsPluginPackagekit *self = GS_PLUGIN_PACKAGEKIT (source_object);
+	GsPluginUpdateCancelData *data = task_data;
+	gboolean interactive = (data->flags & GS_PLUGIN_UPDATE_CANCEL_FLAGS_INTERACTIVE) != 0;
+	g_autoptr(GError) local_error = NULL;
 
 	/* cancel offline update */
 	if (!pk_offline_cancel_with_flags (interactive ? PK_OFFLINE_FLAGS_INTERACTIVE : PK_OFFLINE_FLAGS_NONE,
-					   cancellable,
-					   error)) {
-		gs_plugin_packagekit_error_convert (error, cancellable);
-		return FALSE;
+					   cancellable, &local_error)) {
+		gs_plugin_packagekit_error_convert (&local_error, cancellable);
+		g_task_return_error (task, g_steal_pointer (&local_error));
+		return;
 	}
 
 	/* don't rely on the file monitor */
 	gs_plugin_packagekit_refresh_is_triggered (self, cancellable);
 
-	/* success! */
-	return TRUE;
+	g_task_return_boolean (task, TRUE);
 }
 
-gboolean
-gs_plugin_app_upgrade_trigger (GsPlugin *plugin,
-                               GsApp *app,
-                               GCancellable *cancellable,
-                               GError **error)
+static void
+gs_plugin_packagekit_update_cancel_async (GsPlugin                 *plugin,
+                                          GsApp                    *app,
+                                          GsPluginUpdateCancelFlags flags,
+                                          GCancellable             *cancellable,
+                                          GAsyncReadyCallback      callback,
+                                          gpointer                 user_data)
 {
-	gboolean interactive = gs_plugin_has_flags (plugin, GS_PLUGIN_FLAGS_INTERACTIVE);
+	GsPluginPackagekit *self = GS_PLUGIN_PACKAGEKIT (plugin);
+	g_autoptr(GTask) task = NULL;
+
+	task = gs_plugin_update_cancel_data_new_task (plugin, app, flags, cancellable, callback, user_data);
+	g_task_set_source_tag (task, gs_plugin_packagekit_update_cancel_async);
 
 	/* only process this app if was created by this plugin */
-	if (!gs_app_has_management_plugin (app, plugin))
-		return TRUE;
+	if (app != NULL && !gs_app_has_management_plugin (app, plugin)) {
+		g_task_return_boolean (task, TRUE);
+		return;
+	}
 
-	gs_app_set_state (app, GS_APP_STATE_PENDING_INSTALL);
+	/* already in correct state */
+	if (!self->is_triggered) {
+		g_task_return_boolean (task, TRUE);
+		return;
+	}
+
+	/* There is no async API in the pk-offline, thus run in a thread */
+	g_task_run_in_thread (task, gs_packagekit_update_cancel_thread);
+}
+
+static gboolean
+gs_plugin_packagekit_update_cancel_finish (GsPlugin      *plugin,
+                                           GAsyncResult  *result,
+                                           GError       **error)
+{
+	return g_task_propagate_boolean (G_TASK (result), error);
+}
+
+static void
+gs_packagekit_upgrade_trigger_thread (GTask *task,
+				      gpointer source_object,
+				      gpointer task_data,
+				      GCancellable *cancellable)
+{
+	GsPluginUpgradeTriggerData *data = task_data;
+	gboolean interactive = (data->flags & GS_PLUGIN_UPGRADE_TRIGGER_FLAGS_INTERACTIVE) != 0;
+	g_autoptr(GError) local_error = NULL;
 
 	if (!pk_offline_trigger_upgrade_with_flags (PK_OFFLINE_ACTION_REBOOT,
 						    interactive ? PK_OFFLINE_FLAGS_INTERACTIVE : PK_OFFLINE_FLAGS_NONE,
-						    cancellable,
-						    error)) {
-		gs_app_set_state (app, GS_APP_STATE_UPDATABLE);
-		gs_plugin_packagekit_error_convert (error, cancellable);
-		return FALSE;
+						    cancellable, &local_error)) {
+		gs_app_set_state (data->app, GS_APP_STATE_UPDATABLE);
+		gs_plugin_packagekit_error_convert (&local_error, cancellable);
+		g_task_return_error (task, g_steal_pointer (&local_error));
+		return;
 	}
-	gs_app_set_state (app, GS_APP_STATE_UPDATABLE);
-	return TRUE;
+
+	gs_app_set_state (data->app, GS_APP_STATE_UPDATABLE);
+
+	g_task_return_boolean (task, TRUE);
+}
+
+static void
+gs_plugin_packagekit_upgrade_trigger_async (GsPlugin                   *plugin,
+                                            GsApp                      *app,
+                                            GsPluginUpgradeTriggerFlags flags,
+                                            GCancellable               *cancellable,
+                                            GAsyncReadyCallback         callback,
+                                            gpointer                    user_data)
+{
+	g_autoptr(GTask) task = NULL;
+
+	task = gs_plugin_upgrade_trigger_data_new_task (plugin, app, flags, cancellable, callback, user_data);
+	g_task_set_source_tag (task, gs_plugin_packagekit_upgrade_trigger_async);
+
+	/* only process this app if was created by this plugin */
+	if (!gs_app_has_management_plugin (app, plugin)) {
+		g_task_return_boolean (task, TRUE);
+		return;
+	}
+
+	gs_app_set_state (app, GS_APP_STATE_PENDING_INSTALL);
+
+	/* There is no async API in the pk-offline, thus run in a thread */
+	g_task_run_in_thread (task, gs_packagekit_upgrade_trigger_thread);
+}
+
+static gboolean
+gs_plugin_packagekit_upgrade_trigger_finish (GsPlugin      *plugin,
+                                             GAsyncResult  *result,
+                                             GError       **error)
+{
+	return g_task_propagate_boolean (G_TASK (result), error);
 }
 
 static void
@@ -4509,6 +4877,7 @@ gs_plugin_packagekit_class_init (GsPluginPackagekitClass *klass)
 	object_class->dispose = gs_plugin_packagekit_dispose;
 	object_class->finalize = gs_plugin_packagekit_finalize;
 
+	plugin_class->adopt_app = gs_plugin_packagekit_adopt_app;
 	plugin_class->setup_async = gs_plugin_packagekit_setup_async;
 	plugin_class->setup_finish = gs_plugin_packagekit_setup_finish;
 	plugin_class->shutdown_async = gs_plugin_packagekit_shutdown_async;
@@ -4525,6 +4894,22 @@ gs_plugin_packagekit_class_init (GsPluginPackagekitClass *klass)
 	plugin_class->disable_repository_finish = gs_plugin_packagekit_disable_repository_finish;
 	plugin_class->update_apps_async = gs_plugin_packagekit_update_apps_async;
 	plugin_class->update_apps_finish = gs_plugin_packagekit_update_apps_finish;
+	plugin_class->install_app_async = gs_plugin_packagekit_install_app_async;
+	plugin_class->install_app_finish = gs_plugin_packagekit_install_app_finish;
+	plugin_class->remove_app_async = gs_plugin_packagekit_remove_app_async;
+	plugin_class->remove_app_finish = gs_plugin_packagekit_remove_app_finish;
+	plugin_class->update_cancel_async = gs_plugin_packagekit_update_cancel_async;
+	plugin_class->update_cancel_finish = gs_plugin_packagekit_update_cancel_finish;
+	plugin_class->upgrade_download_async = gs_plugin_packagekit_upgrade_download_async;
+	plugin_class->upgrade_download_finish = gs_plugin_packagekit_upgrade_download_finish;
+	plugin_class->upgrade_trigger_async = gs_plugin_packagekit_upgrade_trigger_async;
+	plugin_class->upgrade_trigger_finish = gs_plugin_packagekit_upgrade_trigger_finish;
+	plugin_class->launch_async = gs_plugin_packagekit_launch_async;
+	plugin_class->launch_finish = gs_plugin_packagekit_launch_finish;
+	plugin_class->file_to_app_async = gs_plugin_packagekit_file_to_app_async;
+	plugin_class->file_to_app_finish = gs_plugin_packagekit_file_to_app_finish;
+	plugin_class->url_to_app_async = gs_plugin_packagekit_url_to_app_async;
+	plugin_class->url_to_app_finish = gs_plugin_packagekit_url_to_app_finish;
 }
 
 GType

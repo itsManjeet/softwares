@@ -143,6 +143,13 @@ gs_plugin_job_list_distro_upgrades_set_property (GObject      *object,
 	}
 }
 
+static gboolean
+gs_plugin_job_list_distro_upgrades_get_interactive (GsPluginJob *job)
+{
+	GsPluginJobListDistroUpgrades *self = GS_PLUGIN_JOB_LIST_DISTRO_UPGRADES (job);
+	return (self->flags & GS_PLUGIN_LIST_DISTRO_UPGRADES_FLAGS_INTERACTIVE) != 0;
+}
+
 static gint
 app_sort_version_cb (GsApp    *app1,
                      GsApp    *app2,
@@ -275,9 +282,9 @@ finish_op (GTask  *task,
 		 * information to be able to install the upgrade later if
 		 * requested. */
 		refine_job = gs_plugin_job_refine_new (merged_list,
+						       GS_PLUGIN_REFINE_JOB_FLAGS_DISABLE_FILTERING,
 						       self->refine_flags |
-						       GS_PLUGIN_REFINE_FLAGS_REQUIRE_SETUP_ACTION |
-						       GS_PLUGIN_REFINE_FLAGS_DISABLE_FILTERING);
+						       GS_PLUGIN_REFINE_FLAGS_REQUIRE_SETUP_ACTION);
 		gs_plugin_loader_job_process_async (plugin_loader, refine_job,
 						    cancellable,
 						    refine_cb,
@@ -353,6 +360,7 @@ gs_plugin_job_list_distro_upgrades_class_init (GsPluginJobListDistroUpgradesClas
 	object_class->get_property = gs_plugin_job_list_distro_upgrades_get_property;
 	object_class->set_property = gs_plugin_job_list_distro_upgrades_set_property;
 
+	job_class->get_interactive = gs_plugin_job_list_distro_upgrades_get_interactive;
 	job_class->run_async = gs_plugin_job_list_distro_upgrades_run_async;
 	job_class->run_finish = gs_plugin_job_list_distro_upgrades_run_finish;
 

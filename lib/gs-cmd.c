@@ -84,7 +84,7 @@ static GsPluginRefineFlags
 gs_cmd_refine_flag_from_string (const gchar *flag, GError **error)
 {
 	if (g_strcmp0 (flag, "all") == 0)
-		return G_MAXINT32;
+		return GS_PLUGIN_REFINE_FLAGS_MASK;
 	if (g_strcmp0 (flag, "license") == 0)
 		return GS_PLUGIN_REFINE_FLAGS_REQUIRE_LICENSE;
 	if (g_strcmp0 (flag, "url") == 0)
@@ -139,8 +139,6 @@ gs_cmd_refine_flag_from_string (const gchar *flag, GError **error)
 		return GS_PLUGIN_REFINE_FLAGS_REQUIRE_DEVELOPER_NAME;
 	if (g_strcmp0 (flag, "kudos") == 0)
 		return GS_PLUGIN_REFINE_FLAGS_REQUIRE_KUDOS;
-	if (g_strcmp0 (flag, "content-rating") == 0)
-		return GS_PLUGIN_REFINE_FLAGS_REQUIRE_CONTENT_RATING;
 	g_set_error (error,
 		     GS_PLUGIN_ERROR,
 		     GS_PLUGIN_ERROR_NOT_SUPPORTED,
@@ -523,10 +521,9 @@ main (int argc, char **argv)
 		g_autoptr(GsPluginJob) plugin_job = NULL;
 		app = gs_app_new (argv[2]);
 		gs_app_set_kind (app, AS_COMPONENT_KIND_OPERATING_SYSTEM);
-		plugin_job = gs_plugin_job_newv (GS_PLUGIN_ACTION_UPGRADE_DOWNLOAD,
-						 "app", app,
-						 "interactive", self->interactive,
-						 NULL);
+		plugin_job = gs_plugin_job_upgrade_download_new (app,
+								 self->interactive ? GS_PLUGIN_UPGRADE_DOWNLOAD_FLAGS_INTERACTIVE :
+								 GS_PLUGIN_UPGRADE_DOWNLOAD_FLAGS_NONE);
 		ret = gs_plugin_loader_job_action (self->plugin_loader, plugin_job,
 						    NULL, &error);
 		if (ret)
@@ -535,7 +532,10 @@ main (int argc, char **argv)
 		app = gs_app_new (argv[2]);
 		for (i = 0; i < repeat; i++) {
 			g_autoptr(GsPluginJob) plugin_job = NULL;
-			plugin_job = gs_plugin_job_refine_new_for_app (app, self->refine_flags);
+			plugin_job = gs_plugin_job_refine_new_for_app (app,
+								       self->interactive ? GS_PLUGIN_REFINE_JOB_FLAGS_INTERACTIVE :
+								       GS_PLUGIN_REFINE_JOB_FLAGS_NONE,
+								       self->refine_flags);
 			ret = gs_plugin_loader_job_action (self->plugin_loader, plugin_job,
 							    NULL, &error);
 			if (!ret)
@@ -547,10 +547,9 @@ main (int argc, char **argv)
 		app = gs_app_new (argv[2]);
 		for (i = 0; i < repeat; i++) {
 			g_autoptr(GsPluginJob) plugin_job = NULL;
-			plugin_job = gs_plugin_job_newv (GS_PLUGIN_ACTION_LAUNCH,
-							 "app", app,
-							 "interactive", self->interactive,
-							 NULL);
+			plugin_job = gs_plugin_job_launch_new (app,
+							       self->interactive ? GS_PLUGIN_LAUNCH_FLAGS_INTERACTIVE :
+							       GS_PLUGIN_LAUNCH_FLAGS_NONE);
 			ret = gs_plugin_loader_job_action (self->plugin_loader, plugin_job,
 							    NULL, &error);
 			if (!ret)
@@ -559,12 +558,11 @@ main (int argc, char **argv)
 	} else if (argc == 3 && g_strcmp0 (argv[1], "filename-to-app") == 0) {
 		g_autoptr(GsPluginJob) plugin_job = NULL;
 		file = g_file_new_for_path (argv[2]);
-		plugin_job = gs_plugin_job_newv (GS_PLUGIN_ACTION_FILE_TO_APP,
-						 "file", file,
-						 "refine-flags", self->refine_flags,
-						 "max-results", self->max_results,
-						 "interactive", self->interactive,
-						 NULL);
+		plugin_job = gs_plugin_job_file_to_app_new (file,
+							    self->interactive ? GS_PLUGIN_FILE_TO_APP_FLAGS_INTERACTIVE :
+							    GS_PLUGIN_FILE_TO_APP_FLAGS_NONE);
+		gs_plugin_job_set_refine_flags (plugin_job, self->refine_flags);
+		gs_plugin_job_set_max_results (plugin_job, self->max_results);
 		app = gs_plugin_loader_job_process_app (self->plugin_loader, plugin_job, NULL, &error);
 		if (app == NULL) {
 			ret = FALSE;
@@ -574,12 +572,11 @@ main (int argc, char **argv)
 		}
 	} else if (argc == 3 && g_strcmp0 (argv[1], "url-to-app") == 0) {
 		g_autoptr(GsPluginJob) plugin_job = NULL;
-		plugin_job = gs_plugin_job_newv (GS_PLUGIN_ACTION_URL_TO_APP,
-						 "search", argv[2],
-						 "refine-flags", self->refine_flags,
-						 "max-results", self->max_results,
-						 "interactive", self->interactive,
-						 NULL);
+		plugin_job = gs_plugin_job_url_to_app_new (argv[2],
+							   self->interactive ? GS_PLUGIN_URL_TO_APP_FLAGS_INTERACTIVE :
+							   GS_PLUGIN_URL_TO_APP_FLAGS_NONE);
+		gs_plugin_job_set_refine_flags (plugin_job, self->refine_flags);
+		gs_plugin_job_set_max_results (plugin_job, self->max_results);
 		app = gs_plugin_loader_job_process_app (self->plugin_loader, plugin_job,
 						    NULL, &error);
 		if (app == NULL) {
@@ -590,14 +587,17 @@ main (int argc, char **argv)
 		}
 	} else if (argc == 2 && g_strcmp0 (argv[1], "updates") == 0) {
 		for (i = 0; i < repeat; i++) {
+			g_autoptr(GsAppQuery) query = NULL;
 			g_autoptr(GsPluginJob) plugin_job = NULL;
 			if (list != NULL)
 				g_object_unref (list);
-			plugin_job = gs_plugin_job_newv (GS_PLUGIN_ACTION_GET_UPDATES,
-							 "refine-flags", self->refine_flags,
-							 "max-results", self->max_results,
-							 "interactive", self->interactive,
-							 NULL);
+			query = gs_app_query_new ("is-for-update", GS_APP_QUERY_TRISTATE_TRUE,
+						  "refine-flags", self->refine_flags,
+						  "max-results", self->max_results,
+						  NULL);
+			plugin_job = gs_plugin_job_list_apps_new (query, self->interactive ?
+								  GS_PLUGIN_LIST_APPS_FLAGS_INTERACTIVE :
+								  GS_PLUGIN_LIST_APPS_FLAGS_NONE);
 			list = gs_plugin_loader_job_process (self->plugin_loader, plugin_job,
 							     NULL, &error);
 			if (list == NULL) {
@@ -625,12 +625,13 @@ main (int argc, char **argv)
 			}
 		}
 	} else if (argc == 2 && g_strcmp0 (argv[1], "sources") == 0) {
+		g_autoptr(GsAppQuery) query = NULL;
 		g_autoptr(GsPluginJob) plugin_job = NULL;
-		plugin_job = gs_plugin_job_newv (GS_PLUGIN_ACTION_GET_SOURCES,
-						 "refine-flags", self->refine_flags,
-						 "max-results", self->max_results,
-						 "interactive", self->interactive,
-						 NULL);
+		query = gs_app_query_new ("is-source", GS_APP_QUERY_TRISTATE_TRUE,
+					  "refine-flags", self->refine_flags,
+					  "max-results", self->max_results,
+					  NULL);
+		plugin_job = gs_plugin_job_list_apps_new (query, self->interactive ? GS_PLUGIN_LIST_APPS_FLAGS_INTERACTIVE : GS_PLUGIN_LIST_APPS_FLAGS_NONE);
 		list = gs_plugin_loader_job_process (self->plugin_loader,
 						     plugin_job,
 						     NULL,

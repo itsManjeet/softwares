@@ -20,17 +20,20 @@ G_BEGIN_DECLS
 
 typedef struct {
 	GsAppList *list;  /* (owned) (not nullable) */
-	GsPluginRefineFlags flags;
+	GsPluginRefineJobFlags job_flags;
+	GsPluginRefineFlags refine_flags;
 } GsPluginRefineData;
 
-GsPluginRefineData *gs_plugin_refine_data_new (GsAppList           *list,
-                                               GsPluginRefineFlags  flags);
-GTask *gs_plugin_refine_data_new_task (gpointer             source_object,
-                                       GsAppList           *list,
-                                       GsPluginRefineFlags  flags,
-                                       GCancellable        *cancellable,
-                                       GAsyncReadyCallback  callback,
-                                       gpointer             user_data);
+GsPluginRefineData *gs_plugin_refine_data_new (GsAppList              *list,
+                                               GsPluginRefineJobFlags  job_flags,
+                                               GsPluginRefineFlags     refine_flags);
+GTask *gs_plugin_refine_data_new_task (gpointer                source_object,
+                                       GsAppList              *list,
+                                       GsPluginRefineJobFlags  job_flags,
+                                       GsPluginRefineFlags     refine_flags,
+                                       GCancellable           *cancellable,
+                                       GAsyncReadyCallback     callback,
+                                       gpointer                user_data);
 void gs_plugin_refine_data_free (GsPluginRefineData *data);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC (GsPluginRefineData, gs_plugin_refine_data_free)
 
@@ -120,5 +123,141 @@ GTask *gs_plugin_update_apps_data_new_task (gpointer                            
                                             gpointer                            user_data);
 void gs_plugin_update_apps_data_free (GsPluginUpdateAppsData *data);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC (GsPluginUpdateAppsData, gs_plugin_update_apps_data_free)
+
+typedef struct {
+	GsApp *app;  /* (owned) (nullable) */
+	GsPluginManageAppFlags flags;
+} GsPluginManageAppData;
+
+GsPluginManageAppData *
+		gs_plugin_manage_app_data_new		(GsApp			*app,
+							 GsPluginManageAppFlags  flags);
+GTask *		gs_plugin_manage_app_data_new_task	(gpointer		 source_object,
+							 GsApp			*app,
+							 GsPluginManageAppFlags	 flags,
+							 GCancellable		*cancellable,
+							 GAsyncReadyCallback	 callback,
+							 gpointer		 user_data);
+void		gs_plugin_manage_app_data_free		(GsPluginManageAppData	*data);
+G_DEFINE_AUTOPTR_CLEANUP_FUNC (GsPluginManageAppData, gs_plugin_manage_app_data_free)
+
+typedef struct {
+	GsApp *app;  /* (owned) (nullable) */
+	GsPluginUpdateCancelFlags flags;
+} GsPluginUpdateCancelData;
+
+GsPluginUpdateCancelData *
+		gs_plugin_update_cancel_data_new	(GsApp			  *app,
+							 GsPluginUpdateCancelFlags flags);
+GTask *		gs_plugin_update_cancel_data_new_task	(gpointer		   source_object,
+							 GsApp			  *app,
+							 GsPluginUpdateCancelFlags flags,
+							 GCancellable		  *cancellable,
+							 GAsyncReadyCallback	   callback,
+							 gpointer		   user_data);
+void		gs_plugin_update_cancel_data_free	(GsPluginUpdateCancelData	*data);
+G_DEFINE_AUTOPTR_CLEANUP_FUNC (GsPluginUpdateCancelData, gs_plugin_update_cancel_data_free)
+
+typedef struct {
+	GsApp *app;  /* (owned) (nullable) */
+	GsPluginUpgradeDownloadFlags flags;
+} GsPluginUpgradeDownloadData;
+
+GsPluginUpgradeDownloadData *
+		gs_plugin_upgrade_download_data_new	(GsApp			     *app,
+							 GsPluginUpgradeDownloadFlags flags);
+GTask *		gs_plugin_upgrade_download_data_new_task(gpointer		      source_object,
+							 GsApp			     *app,
+							 GsPluginUpgradeDownloadFlags flags,
+							 GCancellable		     *cancellable,
+							 GAsyncReadyCallback	      callback,
+							 gpointer		      user_data);
+void		gs_plugin_upgrade_download_data_free	(GsPluginUpgradeDownloadData *data);
+G_DEFINE_AUTOPTR_CLEANUP_FUNC (GsPluginUpgradeDownloadData, gs_plugin_upgrade_download_data_free)
+
+typedef struct {
+	GsApp *app;  /* (owned) (nullable) */
+	GsPluginUpgradeTriggerFlags flags;
+} GsPluginUpgradeTriggerData;
+
+GsPluginUpgradeTriggerData *
+		gs_plugin_upgrade_trigger_data_new	(GsApp			    *app,
+							 GsPluginUpgradeTriggerFlags flags);
+GTask *		gs_plugin_upgrade_trigger_data_new_task	(gpointer		     source_object,
+							 GsApp			    *app,
+							 GsPluginUpgradeTriggerFlags flags,
+							 GCancellable		    *cancellable,
+							 GAsyncReadyCallback	     callback,
+							 gpointer		     user_data);
+void		gs_plugin_upgrade_trigger_data_free	(GsPluginUpgradeTriggerData *data);
+G_DEFINE_AUTOPTR_CLEANUP_FUNC (GsPluginUpgradeTriggerData, gs_plugin_upgrade_trigger_data_free)
+
+typedef struct {
+	GsApp *app;  /* (owned) (nullable) */
+	GsPluginLaunchFlags flags;
+} GsPluginLaunchData;
+
+GsPluginLaunchData *
+		gs_plugin_launch_data_new		(GsApp			    *app,
+							 GsPluginLaunchFlags	     flags);
+GTask *		gs_plugin_launch_data_new_task		(gpointer		     source_object,
+							 GsApp			    *app,
+							 GsPluginLaunchFlags	     flags,
+							 GCancellable		    *cancellable,
+							 GAsyncReadyCallback	     callback,
+							 gpointer		     user_data);
+void		gs_plugin_launch_data_free		(GsPluginLaunchData	    *data);
+G_DEFINE_AUTOPTR_CLEANUP_FUNC (GsPluginLaunchData, gs_plugin_launch_data_free)
+
+typedef struct {
+	GFile *file;  /* (owned) */
+	GsPluginFileToAppFlags flags;
+} GsPluginFileToAppData;
+
+GsPluginFileToAppData *
+		gs_plugin_file_to_app_data_new		(GFile			    *file,
+							 GsPluginFileToAppFlags	     flags);
+GTask *		gs_plugin_file_to_app_data_new_task	(gpointer		     source_object,
+							 GFile			    *file,
+							 GsPluginFileToAppFlags	     flags,
+							 GCancellable		    *cancellable,
+							 GAsyncReadyCallback	     callback,
+							 gpointer		     user_data);
+void		gs_plugin_file_to_app_data_free		(GsPluginFileToAppData	    *data);
+G_DEFINE_AUTOPTR_CLEANUP_FUNC (GsPluginFileToAppData, gs_plugin_file_to_app_data_free)
+
+typedef struct {
+	gchar *url;  /* (owned) */
+	GsPluginUrlToAppFlags flags;
+} GsPluginUrlToAppData;
+
+GsPluginUrlToAppData *
+		gs_plugin_url_to_app_data_new		(const gchar		    *url,
+							 GsPluginUrlToAppFlags	     flags);
+GTask *		gs_plugin_url_to_app_data_new_task	(gpointer		     source_object,
+							 const gchar		    *url,
+							 GsPluginUrlToAppFlags	     flags,
+							 GCancellable		    *cancellable,
+							 GAsyncReadyCallback	     callback,
+							 gpointer		     user_data);
+void		gs_plugin_url_to_app_data_free		(GsPluginUrlToAppData	    *data);
+G_DEFINE_AUTOPTR_CLEANUP_FUNC (GsPluginUrlToAppData, gs_plugin_url_to_app_data_free)
+
+typedef struct {
+	gchar *locale;  /* (owned) */
+	GsPluginGetLangpacksFlags flags;
+} GsPluginGetLangpacksData;
+
+GsPluginGetLangpacksData *
+		gs_plugin_get_langpacks_data_new	(const gchar		    *locale,
+							 GsPluginGetLangpacksFlags   flags);
+GTask *		gs_plugin_get_langpacks_data_new_task	(gpointer		     source_object,
+							 const gchar		    *locale,
+							 GsPluginGetLangpacksFlags   flags,
+							 GCancellable		    *cancellable,
+							 GAsyncReadyCallback	     callback,
+							 gpointer		     user_data);
+void		gs_plugin_get_langpacks_data_free	(GsPluginGetLangpacksData   *data);
+G_DEFINE_AUTOPTR_CLEANUP_FUNC (GsPluginGetLangpacksData, gs_plugin_get_langpacks_data_free)
 
 G_END_DECLS

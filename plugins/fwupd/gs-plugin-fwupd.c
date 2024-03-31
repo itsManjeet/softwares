@@ -171,8 +171,9 @@ gs_plugin_fwupd_finalize (GObject *object)
 	G_OBJECT_CLASS (gs_plugin_fwupd_parent_class)->finalize (object);
 }
 
-void
-gs_plugin_adopt_app (GsPlugin *plugin, GsApp *app)
+static void
+gs_plugin_fwupd_adopt_app (GsPlugin *plugin,
+			   GsApp *app)
 {
 	if (gs_app_get_kind (app) == AS_COMPONENT_KIND_FIRMWARE)
 		gs_app_set_management_plugin (app, plugin);
@@ -601,174 +602,392 @@ gs_plugin_fwupd_new_app (GsPlugin *plugin, FwupdDevice *dev, GError **error)
 	return g_steal_pointer (&app);
 }
 
-gboolean
-gs_plugin_add_updates_historical (GsPlugin *plugin,
-				  GsAppList *list,
-				  GCancellable *cancellable,
-				  GError **error)
+typedef struct {
+	guint n_pending_ops;
+	gboolean historical_updates;
+	GsAppList *list; /* (owned) */
+	GError *saved_error;  /* (nullable) (owned) */
+} ListUpdatesData;
+
+static void
+list_updates_data_free (ListUpdatesData *data)
 {
-	GsPluginFwupd *self = GS_PLUGIN_FWUPD (plugin);
-	g_autoptr(GError) error_local = NULL;
-	g_autoptr(GPtrArray) devices = NULL;
+	g_assert (data->n_pending_ops == 0);
+	g_clear_object (&data->list);
+	g_clear_error (&data->saved_error);
+	g_free (data);
+}
 
-	devices = fwupd_client_get_devices (self->client, cancellable, &error_local);
-	if (devices == NULL) {
-		if (g_error_matches (error_local,
-				     FWUPD_ERROR,
-				     FWUPD_ERROR_NOTHING_TO_DO))
-			return TRUE;
-		if (g_error_matches (error_local,
-				     FWUPD_ERROR,
-				     FWUPD_ERROR_NOT_FOUND))
-			return TRUE;
-		g_propagate_error (error, g_steal_pointer (&error_local));
-		gs_plugin_fwupd_error_convert (error);
-		return FALSE;
-	}
+G_DEFINE_AUTOPTR_CLEANUP_FUNC (ListUpdatesData, list_updates_data_free)
 
-	for (guint i = 0; i < devices->len; i++) {
-		FwupdDevice *idev = g_ptr_array_index (devices, i);
-		g_autoptr(FwupdDevice) dev = NULL;
-		g_autoptr(GsApp) app = NULL;
+typedef struct {
+	GTask *task; /* (owned) */
+	FwupdDevice *device; /* (not nullable) (owned) */
+} ListUpdatesDevData;
 
-		/* get historical updates */
-		dev = fwupd_client_get_results (self->client,
-						fwupd_device_get_id (idev),
-						cancellable,
-						&error_local);
-		if (dev == NULL) {
-			if (g_error_matches (error_local,
-					     FWUPD_ERROR,
-					     FWUPD_ERROR_NOTHING_TO_DO)) {
-				g_clear_error (&error_local);
-				continue;
-			}
-			if (g_error_matches (error_local,
-					     FWUPD_ERROR,
-					     FWUPD_ERROR_NOT_FOUND)) {
-				g_clear_error (&error_local);
-				continue;
-			}
-			g_propagate_error (error, g_steal_pointer (&error_local));
-			gs_plugin_fwupd_error_convert (error);
-			return FALSE;
+static void
+list_updates_dev_data_free (ListUpdatesDevData *data)
+{
+	g_clear_object (&data->task);
+	g_clear_object (&data->device);
+	g_free (data);
+}
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC (ListUpdatesDevData, list_updates_dev_data_free)
+
+/* @error is (nullable) (transfer full) */
+static void
+gs_plugin_fwupd_list_updates_finish_op (GTask *task,
+					GsApp *app,
+					GError *error)
+{
+	g_autoptr(GError) error_owned = g_steal_pointer (&error);
+	ListUpdatesData *data = g_task_get_task_data (task);
+
+	if (error_owned != NULL && data->saved_error == NULL)
+		data->saved_error = g_steal_pointer (&error_owned);
+	else if (error_owned != NULL)
+		g_debug ("Additional error while listing apps for update: %s", error_owned->message);
+	else if (app != NULL)
+		gs_app_list_add (data->list, app);
+
+	g_assert (data->n_pending_ops > 0);
+	data->n_pending_ops--;
+
+	if (data->n_pending_ops > 0)
+		return;
+
+	if (data->saved_error != NULL)
+		g_task_return_error (task, g_steal_pointer (&data->saved_error));
+	else if (data->list == NULL)
+		g_task_return_pointer (task, gs_app_list_new (), g_object_unref);
+	else
+		g_task_return_pointer (task, g_steal_pointer (&data->list), g_object_unref);
+}
+
+static void
+gs_plugin_fwupd_list_historical_updates_got_dev_results_cb (GObject *source_object,
+							    GAsyncResult *result,
+							    gpointer user_data)
+{
+	g_autoptr(ListUpdatesDevData) dev_data = user_data;
+	g_autoptr(FwupdDevice) dev = NULL;
+	g_autoptr(GsApp) app = NULL;
+	g_autoptr(GError) local_error = NULL;
+	gboolean success = TRUE;
+
+	dev = fwupd_client_get_results_finish (FWUPD_CLIENT (source_object), result, &local_error);
+	if (dev == NULL) {
+		if (g_error_matches (local_error, FWUPD_ERROR, FWUPD_ERROR_NOTHING_TO_DO)) {
+			g_clear_error (&local_error);
+		} else if (g_error_matches (local_error, FWUPD_ERROR, FWUPD_ERROR_NOT_FOUND)) {
+			g_clear_error (&local_error);
+		} else {
+			gs_plugin_fwupd_error_convert (&local_error);
 		}
+		success = FALSE;
+	} else {
+		GsPlugin *plugin = GS_PLUGIN (g_task_get_source_object (dev_data->task));
 
 		/* parse */
 		app = gs_plugin_fwupd_new_app_from_device (plugin, dev);
-		if (app != NULL) {
-			gs_app_list_add (list, app);
-		} else {
+		if (app == NULL) {
 			g_debug ("updates historical: failed to build result for '%s' (%s)",
 				 fwupd_device_get_name (dev),
 				 fwupd_device_get_id (dev));
 		}
 	}
 
-	return TRUE;
+	gs_plugin_fwupd_list_updates_finish_op (dev_data->task, app, success ? NULL : g_steal_pointer (&local_error));
 }
 
-gboolean
-gs_plugin_add_updates (GsPlugin *plugin,
-		       GsAppList *list,
-		       GCancellable *cancellable,
-		       GError **error)
+static void
+gs_plugin_fwupd_list_updates_got_dev_upgrades_cb (GObject *source_object,
+						  GAsyncResult *result,
+						  gpointer user_data)
 {
-	GsPluginFwupd *self = GS_PLUGIN_FWUPD (plugin);
-	g_autoptr(GError) error_local = NULL;
+	g_autoptr(ListUpdatesDevData) dev_data = user_data;
+	g_autoptr(GPtrArray) rels = NULL;
+	g_autoptr(GsApp) app = NULL;
+	g_autoptr(GError) local_error = NULL;
+	FwupdRelease *rel_newest;
+	gboolean success = TRUE;
+
+	rels = fwupd_client_get_upgrades_finish (FWUPD_CLIENT (source_object), result, &local_error);
+	if (rels == NULL) {
+		if (g_error_matches (local_error, FWUPD_ERROR, FWUPD_ERROR_NOTHING_TO_DO)) {
+			g_debug ("no updates for %s", fwupd_device_get_id (dev_data->device));
+		} else if (g_error_matches (local_error, FWUPD_ERROR, FWUPD_ERROR_NOT_SUPPORTED)) {
+			g_debug ("not supported for %s", fwupd_device_get_id (dev_data->device));
+		} else {
+			g_warning ("failed to get upgrades for %s: %s]",
+				   fwupd_device_get_id (dev_data->device),
+				   local_error->message);
+		}
+		success = FALSE;
+		/* ignore error for this device */
+		g_clear_error (&local_error);
+	}
+
+	if (success) {
+		GsPlugin *plugin = GS_PLUGIN (g_task_get_source_object (dev_data->task));
+		/* normal device update */
+		rel_newest = g_ptr_array_index (rels, 0);
+		fwupd_device_add_release (dev_data->device, rel_newest);
+		app = gs_plugin_fwupd_new_app (plugin, dev_data->device, &local_error);
+		if (app == NULL) {
+			g_debug ("Failed to create app for list for-update: %s", local_error->message);
+			success = FALSE;
+			/* ignore error for this device */
+			g_clear_error (&local_error);
+		}
+	}
+
+	/* add update descriptions for all releases inbetween */
+	if (success && rels->len > 1) {
+		g_autoptr(GString) update_desc = g_string_new (NULL);
+		for (guint j = 0; j < rels->len; j++) {
+			FwupdRelease *rel = g_ptr_array_index (rels, j);
+			g_autofree gchar *desc = NULL;
+			if (fwupd_release_get_description (rel) == NULL)
+				continue;
+#if AS_CHECK_VERSION(1, 0, 0)
+			desc = as_markup_convert (fwupd_release_get_description (rel), AS_MARKUP_KIND_TEXT, NULL);
+#else
+			desc = as_markup_convert_simple (fwupd_release_get_description (rel), NULL);
+#endif
+			if (desc == NULL)
+				continue;
+			g_string_append_printf (update_desc,
+						"Version %s:\n%s\n\n",
+						fwupd_release_get_version (rel),
+						desc);
+		}
+		if (update_desc->len > 2) {
+			g_string_truncate (update_desc, update_desc->len - 2);
+			gs_app_set_update_details_text (app, update_desc->str);
+		}
+	}
+
+	gs_plugin_fwupd_list_updates_finish_op (dev_data->task, app, success ? NULL : g_steal_pointer (&local_error));
+}
+
+static void
+gs_plugin_fwupd_list_updates_got_devices_cb (GObject *source_object,
+					     GAsyncResult *result,
+					     gpointer user_data)
+{
+	g_autoptr(GTask) task = user_data;
 	g_autoptr(GPtrArray) devices = NULL;
+	g_autoptr(GError) local_error = NULL;
+	FwupdClient *client = FWUPD_CLIENT (source_object);
+	GCancellable *cancellable = g_task_get_cancellable (task);
+	GsPlugin *plugin = GS_PLUGIN (g_task_get_source_object (task));
+	ListUpdatesData *list_updates_data = g_task_get_task_data (task);
+
+	/* this operation is decremented at the end of the function */
+	g_assert (list_updates_data->n_pending_ops == 1);
 
 	/* get current list of updates */
-	devices = fwupd_client_get_devices (self->client, cancellable, &error_local);
+	devices = fwupd_client_get_devices_finish (client, result, &local_error);
 	if (devices == NULL) {
-		if (g_error_matches (error_local, FWUPD_ERROR, FWUPD_ERROR_NOTHING_TO_DO) ||
-		    g_error_matches (error_local, FWUPD_ERROR, FWUPD_ERROR_NOT_SUPPORTED) ||
-		    g_error_matches (error_local, FWUPD_ERROR, FWUPD_ERROR_NOT_FOUND)) {
-			g_debug ("no devices (%s)", error_local->message);
-			return TRUE;
+		if (g_error_matches (local_error, FWUPD_ERROR, FWUPD_ERROR_NOTHING_TO_DO) ||
+		    g_error_matches (local_error, FWUPD_ERROR, FWUPD_ERROR_NOT_SUPPORTED) ||
+		    g_error_matches (local_error, FWUPD_ERROR, FWUPD_ERROR_NOT_FOUND)) {
+			g_debug ("no devices (%s)", local_error->message);
+			/* ignore error */
+			gs_plugin_fwupd_list_updates_finish_op (task, NULL, NULL);
+			return;
 		}
-		g_debug ("Failed to get devices: %s", error_local->message);
-		return TRUE;
+		g_debug ("Failed to get devices: %s", local_error->message);
+		/* ignore error */
+		gs_plugin_fwupd_list_updates_finish_op (task, NULL, NULL);
+		return;
 	}
 	for (guint i = 0; i < devices->len; i++) {
 		FwupdDevice *dev = g_ptr_array_index (devices, i);
-		FwupdRelease *rel_newest;
-		g_autoptr(GError) error_local2 = NULL;
-		g_autoptr(GPtrArray) rels = NULL;
+		g_autoptr(ListUpdatesDevData) dev_data = NULL;
 		g_autoptr(GsApp) app = NULL;
-
-		/* locked device that needs unlocking */
-		if (fwupd_device_has_flag (dev, FWUPD_DEVICE_FLAG_LOCKED)) {
-			app = gs_plugin_fwupd_new_app_from_device_raw (plugin, dev);
-			gs_fwupd_app_set_is_locked (app, TRUE);
-			gs_app_list_add (list, app);
-			continue;
-		}
 
 		/* not going to have results, so save a D-Bus round-trip */
 		if (!fwupd_device_has_flag (dev, FWUPD_DEVICE_FLAG_SUPPORTED))
 			continue;
 
+		if (list_updates_data->historical_updates) {
+			list_updates_data->n_pending_ops++;
+
+			dev_data = g_new0 (ListUpdatesDevData, 1);
+			dev_data->task = g_object_ref (task);
+			dev_data->device = g_object_ref (dev);
+
+			fwupd_client_get_results_async (client,
+							fwupd_device_get_id (dev),
+							cancellable,
+							gs_plugin_fwupd_list_historical_updates_got_dev_results_cb,
+							g_steal_pointer (&dev_data));
+			continue;
+		}
+
+		/* locked device that needs unlocking */
+		if (fwupd_device_has_flag (dev, FWUPD_DEVICE_FLAG_LOCKED)) {
+			app = gs_plugin_fwupd_new_app_from_device_raw (plugin, dev);
+			gs_fwupd_app_set_is_locked (app, TRUE);
+			gs_app_list_add (list_updates_data->list, app);
+			continue;
+		}
+
+		list_updates_data->n_pending_ops++;
+
+		dev_data = g_new0 (ListUpdatesDevData, 1);
+		dev_data->task = g_object_ref (task);
+		dev_data->device = g_object_ref (dev);
+
 		/* get the releases for this device and filter for validity */
-		rels = fwupd_client_get_upgrades (self->client,
-						  fwupd_device_get_id (dev),
-						  cancellable, &error_local2);
-		if (rels == NULL) {
-			if (g_error_matches (error_local2,
-					     FWUPD_ERROR,
-					     FWUPD_ERROR_NOTHING_TO_DO)) {
-				g_debug ("no updates for %s", fwupd_device_get_id (dev));
-				continue;
-			}
-			if (g_error_matches (error_local2,
-					     FWUPD_ERROR,
-					     FWUPD_ERROR_NOT_SUPPORTED)) {
-				g_debug ("not supported for %s", fwupd_device_get_id (dev));
-				continue;
-			}
-			g_warning ("failed to get upgrades for %s: %s]",
-				   fwupd_device_get_id (dev),
-				   error_local2->message);
-			continue;
-		}
+		fwupd_client_get_upgrades_async (client,
+						 fwupd_device_get_id (dev),
+						 cancellable,
+						 gs_plugin_fwupd_list_updates_got_dev_upgrades_cb,
+						 g_steal_pointer (&dev_data));
+	}
 
-		/* normal device update */
-		rel_newest = g_ptr_array_index (rels, 0);
-		fwupd_device_add_release (dev, rel_newest);
-		app = gs_plugin_fwupd_new_app (plugin, dev, &error_local2);
+	gs_plugin_fwupd_list_updates_finish_op (task, NULL, NULL);
+}
+
+static void
+gs_plugin_fwupd_list_sources_got_remotes_cb (GObject *source_object,
+					     GAsyncResult *result,
+					     gpointer user_data)
+{
+	g_autoptr(GTask) task = user_data;
+	g_autoptr(GPtrArray) remotes = NULL;
+	g_autoptr(GsAppList) list = NULL;
+	g_autoptr(GMutexLocker) locker = NULL;
+	g_autoptr(GError) local_error = NULL;
+	GsPluginFwupd *self = GS_PLUGIN_FWUPD (g_task_get_source_object (task));
+	GsPlugin *plugin = GS_PLUGIN (self);
+
+	/* find all remotes */
+	remotes = fwupd_client_get_remotes_finish (FWUPD_CLIENT (source_object), result, &local_error);
+	if (remotes == NULL) {
+		gs_plugin_fwupd_error_convert (&local_error);
+		g_task_return_error (task, g_steal_pointer (&local_error));
+		return;
+	}
+	locker = g_mutex_locker_new (&self->cached_sources_mutex);
+	list = gs_app_list_new ();
+	if (self->cached_sources == NULL)
+		self->cached_sources = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+	for (guint i = 0; i < remotes->len; i++) {
+		FwupdRemote *remote = g_ptr_array_index (remotes, i);
+		g_autofree gchar *id = NULL;
+		g_autoptr(GsApp) app = NULL;
+
+		/* ignore these, they're built in */
+		if (fwupd_remote_get_kind (remote) != FWUPD_REMOTE_KIND_DOWNLOAD)
+			continue;
+
+		/* create something that we can use to enable/disable */
+		id = g_strdup_printf ("org.fwupd.%s.remote", fwupd_remote_get_id (remote));
+		app = g_hash_table_lookup (self->cached_sources, id);
 		if (app == NULL) {
-			g_debug ("%s", error_local2->message);
-			continue;
-		}
+			gboolean is_enabled;
 
-		/* add update descriptions for all releases inbetween */
-		if (rels->len > 1) {
-			g_autoptr(GString) update_desc = g_string_new (NULL);
-			for (guint j = 0; j < rels->len; j++) {
-				FwupdRelease *rel = g_ptr_array_index (rels, j);
-				g_autofree gchar *desc = NULL;
-				if (fwupd_release_get_description (rel) == NULL)
-					continue;
-#if AS_CHECK_VERSION(1, 0, 0)
-				desc = as_markup_convert (fwupd_release_get_description (rel), AS_MARKUP_KIND_TEXT, NULL);
-#else
-				desc = as_markup_convert_simple (fwupd_release_get_description (rel), NULL);
-#endif
-				if (desc == NULL)
-					continue;
-				g_string_append_printf (update_desc,
-							"Version %s:\n%s\n\n",
-							fwupd_release_get_version (rel),
-							desc);
-			}
-			if (update_desc->len > 2) {
-				g_string_truncate (update_desc, update_desc->len - 2);
-				gs_app_set_update_details_text (app, update_desc->str);
-			}
+			#if FWUPD_CHECK_VERSION(1, 9, 4)
+			is_enabled = fwupd_remote_has_flag (remote, FWUPD_REMOTE_FLAG_ENABLED);
+			#else
+			is_enabled = fwupd_remote_get_enabled (remote);
+			#endif
+
+			app = gs_app_new (id);
+			gs_app_set_kind (app, AS_COMPONENT_KIND_REPOSITORY);
+			gs_app_set_scope (app, AS_COMPONENT_SCOPE_SYSTEM);
+			gs_app_set_state (app, is_enabled ?
+					  GS_APP_STATE_INSTALLED : GS_APP_STATE_AVAILABLE);
+			gs_app_add_quirk (app, GS_APP_QUIRK_NOT_LAUNCHABLE);
+			gs_app_set_name (app, GS_APP_QUALITY_LOWEST,
+					 fwupd_remote_get_title (remote));
+			gs_app_set_agreement (app, fwupd_remote_get_agreement (remote));
+			gs_app_set_url (app, AS_URL_KIND_HOMEPAGE,
+					fwupd_remote_get_metadata_uri (remote));
+			gs_app_set_metadata (app, "fwupd::remote-id",
+					     fwupd_remote_get_id (remote));
+			gs_app_set_management_plugin (app, plugin);
+			gs_app_set_metadata (app, "GnomeSoftware::PackagingFormat", "fwupd");
+			gs_app_set_metadata (app, "GnomeSoftware::SortKey", "800");
+			gs_app_set_origin_ui (app, _("Firmware"));
+			g_hash_table_insert (self->cached_sources, g_strdup (id), app);
+			g_object_weak_ref (G_OBJECT (app), cached_sources_weak_ref_cb, self);
+		} else {
+			g_object_ref (app);
+			/* The repo-related apps are those installed; due to re-using
+			   cached app, make sure the list is populated from fresh data. */
+			gs_app_list_remove_all (gs_app_get_related (app));
 		}
 		gs_app_list_add (list, app);
 	}
-	return TRUE;
+
+	g_task_return_pointer (task, g_steal_pointer (&list), g_object_unref);
+}
+
+static void
+gs_plugin_fwupd_list_apps_async (GsPlugin *plugin,
+				 GsAppQuery *query,
+				 GsPluginListAppsFlags flags,
+				 GCancellable *cancellable,
+				 GAsyncReadyCallback callback,
+				 gpointer user_data)
+{
+	GsPluginFwupd *self = GS_PLUGIN_FWUPD (plugin);
+	GsAppQueryTristate is_for_update = GS_APP_QUERY_TRISTATE_UNSET;
+	GsAppQueryTristate is_updates_historical = GS_APP_QUERY_TRISTATE_UNSET;
+	GsAppQueryTristate is_source = GS_APP_QUERY_TRISTATE_UNSET;
+	g_autoptr(GTask) task = NULL;
+
+	task = g_task_new (plugin, cancellable, callback, user_data);
+	g_task_set_source_tag (task, gs_plugin_fwupd_list_apps_async);
+
+	if (query != NULL) {
+		is_for_update = gs_app_query_get_is_for_update (query);
+		is_updates_historical = gs_app_query_get_is_updates_historical (query);
+		is_source = gs_app_query_get_is_source (query);
+	}
+
+	/* Currently only support a subset of query properties, and only one set at once. */
+	if ((is_for_update == GS_APP_QUERY_TRISTATE_UNSET &&
+	     is_updates_historical == GS_APP_QUERY_TRISTATE_UNSET &&
+	     is_source == GS_APP_QUERY_TRISTATE_UNSET) ||
+	    is_for_update == GS_APP_QUERY_TRISTATE_FALSE ||
+	    is_updates_historical == GS_APP_QUERY_TRISTATE_FALSE ||
+	    is_source == GS_APP_QUERY_TRISTATE_FALSE ||
+	    gs_app_query_get_n_properties_set (query) != 1) {
+		g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+					 "Unsupported query");
+		return;
+	}
+
+	if (is_for_update == GS_APP_QUERY_TRISTATE_TRUE ||
+	    is_updates_historical == GS_APP_QUERY_TRISTATE_TRUE) {
+		g_autoptr (ListUpdatesData) data = g_new0 (ListUpdatesData, 1);
+		data->n_pending_ops = 1;
+		data->historical_updates = is_updates_historical == GS_APP_QUERY_TRISTATE_TRUE;
+		data->list = gs_app_list_new ();
+		g_task_set_task_data (task, g_steal_pointer (&data), (GDestroyNotify) list_updates_data_free);
+		fwupd_client_get_devices_async (self->client, cancellable,
+						gs_plugin_fwupd_list_updates_got_devices_cb, g_steal_pointer (&task));
+	} else if (is_source == GS_APP_QUERY_TRISTATE_TRUE) {
+		fwupd_client_get_remotes_async (self->client, cancellable,
+						gs_plugin_fwupd_list_sources_got_remotes_cb, g_steal_pointer (&task));
+	} else {
+		g_assert_not_reached ();
+	}
+}
+
+static GsAppList *
+gs_plugin_fwupd_list_apps_finish (GsPlugin *plugin,
+				  GAsyncResult *result,
+				  GError **error)
+{
+	return g_task_propagate_pointer (G_TASK (result), error);
 }
 
 static gboolean
@@ -1286,7 +1505,8 @@ install_install_cb (GObject      *source_object,
 
 		/* show the user this failed */
 		gs_plugin_fwupd_error_convert (&local_error);
-		event = gs_plugin_event_new ("app", self->app_current,
+		event = gs_plugin_event_new ("action", GS_PLUGIN_ACTION_INSTALL,
+					     "app", self->app_current,
 					     "error", local_error,
 					     NULL);
 		gs_plugin_event_add_flag (event, GS_PLUGIN_EVENT_FLAG_WARNING);
@@ -1448,53 +1668,78 @@ gs_plugin_fwupd_modify_source_finish (GsPluginFwupd *self,
 }
 
 static void
-async_result_cb (GObject      *source_object,
-                 GAsyncResult *result,
-                 gpointer      user_data)
+gs_plugin_fwupd_install_app_installed (GObject *source_object,
+				       GAsyncResult *result,
+				       gpointer user_data)
 {
-	GAsyncResult **result_out = user_data;
+	GsPluginFwupd *self = GS_PLUGIN_FWUPD (source_object);
+	g_autoptr(GTask) task = user_data;
+	g_autoptr(GError) local_error = NULL;
 
-	g_assert (result_out != NULL && *result_out == NULL);
-	*result_out = g_object_ref (result);
-	g_main_context_wakeup (g_main_context_get_thread_default ());
+	if (!gs_plugin_fwupd_install_finish (self, result, &local_error))
+		g_task_return_error (task, g_steal_pointer (&local_error));
+	else
+		g_task_return_boolean (task, TRUE);
 }
 
-gboolean
-gs_plugin_app_install (GsPlugin *plugin,
-		       GsApp *app,
-		       GCancellable *cancellable,
-		       GError **error)
+static void
+gs_plugin_fwupd_install_app_downloaded (GObject *source_object,
+					GAsyncResult *result,
+					gpointer user_data)
+{
+	GsPluginFwupd *self = GS_PLUGIN_FWUPD (source_object);
+	g_autoptr(GTask) task = user_data;
+	g_autoptr(GError) local_error = NULL;
+	GsPluginManageAppData *data = g_task_get_task_data (task);
+	GCancellable *cancellable = g_task_get_cancellable (task);
+
+	if (!gs_plugin_fwupd_download_finish (self, result, &local_error)) {
+		g_task_return_error (task, g_steal_pointer (&local_error));
+		return;
+	}
+	/* FIXME: Connect #GsPluginAppNeedsUserActionCallback */
+	gs_plugin_fwupd_install_async (self, data->app, (data->flags & GS_PLUGIN_MANAGE_APP_FLAGS_INTERACTIVE) != 0,
+				       NULL, NULL, cancellable,
+				       gs_plugin_fwupd_install_app_installed,
+				       g_steal_pointer (&task));
+}
+
+static void
+gs_plugin_fwupd_install_app_async (GsPlugin *plugin,
+				   GsApp *app,
+				   GsPluginManageAppFlags flags,
+				   GCancellable *cancellable,
+				   GAsyncReadyCallback callback,
+				   gpointer user_data)
 {
 	GsPluginFwupd *self = GS_PLUGIN_FWUPD (plugin);
-	gboolean interactive = gs_plugin_has_flags (plugin, GS_PLUGIN_FLAGS_INTERACTIVE);
-	g_autoptr(GMainContext) context = g_main_context_new ();
-	g_autoptr(GMainContextPusher) pusher = g_main_context_pusher_new (context);
-	g_autoptr(GAsyncResult) result = NULL;
+	g_autoptr(GTask) task = NULL;
+	gboolean interactive = (flags & GS_PLUGIN_MANAGE_APP_FLAGS_INTERACTIVE) != 0;
+
+	task = gs_plugin_manage_app_data_new_task (plugin, app, flags, cancellable, callback, user_data);
+	g_task_set_source_tag (task, gs_plugin_fwupd_install_app_async);
 
 	/* only process this app if was created by this plugin */
-	if (!gs_app_has_management_plugin (app, plugin))
-		return TRUE;
+	if (!gs_app_has_management_plugin (app, plugin)) {
+		g_task_return_boolean (task, TRUE);
+		return;
+	}
 
-	/* source -> remote, handled by dedicated function */
-	g_return_val_if_fail (gs_app_get_kind (app) != AS_COMPONENT_KIND_REPOSITORY, FALSE);
+	/* is not a source */
+	g_assert (gs_app_get_kind (app) != AS_COMPONENT_KIND_REPOSITORY);
 
 	/* Download the file first. */
-	gs_plugin_fwupd_download_async (self, app, interactive, cancellable, async_result_cb, &result);
-	while (result == NULL)
-		g_main_context_iteration (context, TRUE);
+	gs_plugin_fwupd_download_async (self, app, interactive, cancellable,
+					gs_plugin_fwupd_install_app_downloaded,
+					g_steal_pointer (&task));
+}
 
-	if (!gs_plugin_fwupd_download_finish (self, result, error))
-		return FALSE;
-
-	g_clear_object (&result);
-
-	/* FIXME: Connect #GsPluginAppNeedsUserActionCallback when this function
-	 * is ported to the new #GsPluginJob subclasses. */
-	gs_plugin_fwupd_install_async (self, app, interactive, NULL, NULL, cancellable, async_result_cb, &result);
-	while (result == NULL)
-		g_main_context_iteration (context, TRUE);
-
-	return gs_plugin_fwupd_install_finish (self, result, error);
+static gboolean
+gs_plugin_fwupd_install_app_finish (GsPlugin *plugin,
+				    GAsyncResult *result,
+				    GError **error)
+{
+	return g_task_propagate_boolean (G_TASK (result), error);
 }
 
 typedef struct {
@@ -1737,7 +1982,8 @@ finish_update_apps_op (GTask  *task,
 		g_prefix_error_literal (&event_error, _("Firmware update could not be applied: "));
 		gs_plugin_fwupd_error_convert (&event_error);
 
-		event = gs_plugin_event_new ("app", self->app_current,
+		event = gs_plugin_event_new ("action", GS_PLUGIN_ACTION_GET_UPDATES,
+					     "app", self->app_current,
 					     "error", event_error,
 					     NULL);
 		gs_plugin_event_add_flag (event, GS_PLUGIN_EVENT_FLAG_WARNING);
@@ -1772,38 +2018,44 @@ gs_plugin_fwupd_update_apps_finish (GsPlugin      *plugin,
 	return g_task_propagate_boolean (G_TASK (result), error);
 }
 
-gboolean
-gs_plugin_file_to_app (GsPlugin *plugin,
-		       GsAppList *list,
-		       GFile *file,
-		       GCancellable *cancellable,
-		       GError **error)
+static void
+gs_plugin_fwupd_file_to_app_got_content_type_cb (GObject *source_object,
+						 GAsyncResult *result,
+						 gpointer user_data)
 {
-	GsPluginFwupd *self = GS_PLUGIN_FWUPD (plugin);
+	g_autoptr(GTask) task = user_data;
+	g_autoptr(GPtrArray) devices = NULL;
+	g_autoptr(GsAppList) list = NULL;
+	g_autoptr(GError) local_error = NULL;
 	g_autofree gchar *content_type = NULL;
 	g_autofree gchar *filename = NULL;
-	g_autoptr(GPtrArray) devices = NULL;
+	GsPluginFileToAppData *data = g_task_get_task_data (task);
+	GsPluginFwupd *self = GS_PLUGIN_FWUPD (g_task_get_source_object (task));
+	GsPlugin *plugin = GS_PLUGIN (self);
 	const gchar *mimetypes[] = {
 		"application/vnd.ms-cab-compressed",
 		NULL };
 
-	/* does this match any of the mimetypes we support */
-	content_type = gs_utils_get_content_type (file, cancellable, error);
-	if (content_type == NULL)
-		return FALSE;
-	if (!g_strv_contains (mimetypes, content_type))
-		return TRUE;
-
-	/* get results */
-	filename = g_file_get_path (file);
-	devices = fwupd_client_get_details (self->client,
-					    filename,
-					    cancellable,
-					    error);
-	if (devices == NULL) {
-		gs_plugin_fwupd_error_convert (error);
-		return FALSE;
+	content_type = gs_utils_get_content_type_finish (G_FILE (source_object), result, &local_error);
+	if (content_type == NULL) {
+		g_task_return_error (task, g_steal_pointer (&local_error));
+		return;
 	}
+	if (!g_strv_contains (mimetypes, content_type)) {
+		g_task_return_pointer (task, gs_app_list_new (), g_object_unref);
+		return;
+	}
+
+	filename = g_file_get_path (data->file);
+	devices = fwupd_client_get_details (self->client, filename, g_task_get_cancellable (task), &local_error);
+	if (devices == NULL) {
+		gs_plugin_fwupd_error_convert (&local_error);
+		g_task_return_error (task, g_steal_pointer (&local_error));
+		return;
+	}
+
+	list = gs_app_list_new ();
+
 	for (guint i = 0; i < devices->len; i++) {
 		FwupdDevice *dev = g_ptr_array_index (devices, i);
 		g_autoptr(GsApp) app = NULL;
@@ -1817,75 +2069,34 @@ gs_plugin_file_to_app (GsPlugin *plugin,
 					gs_app_get_update_details_markup (app));
 		gs_app_list_add (list, app);
 	}
-	return TRUE;
+
+	g_task_return_pointer (task, g_steal_pointer (&list), g_object_unref);
 }
 
-gboolean
-gs_plugin_add_sources (GsPlugin *plugin,
-		       GsAppList *list,
-		       GCancellable *cancellable,
-		       GError **error)
+static void
+gs_plugin_fwupd_file_to_app_async (GsPlugin *plugin,
+				   GFile *file,
+				   GsPluginFileToAppFlags flags,
+				   GCancellable *cancellable,
+				   GAsyncReadyCallback callback,
+				   gpointer user_data)
 {
-	GsPluginFwupd *self = GS_PLUGIN_FWUPD (plugin);
-	g_autoptr(GPtrArray) remotes = NULL;
-	g_autoptr(GMutexLocker) locker = NULL;
+	g_autoptr(GTask) task = NULL;
 
-	/* find all remotes */
-	remotes = fwupd_client_get_remotes (self->client, cancellable, error);
-	if (remotes == NULL)
-		return FALSE;
-	locker = g_mutex_locker_new (&self->cached_sources_mutex);
-	if (self->cached_sources == NULL)
-		self->cached_sources = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
-	for (guint i = 0; i < remotes->len; i++) {
-		FwupdRemote *remote = g_ptr_array_index (remotes, i);
-		g_autofree gchar *id = NULL;
-		g_autoptr(GsApp) app = NULL;
+	task = gs_plugin_file_to_app_data_new_task (plugin, file, flags, cancellable, callback, user_data);
+	g_task_set_source_tag (task, gs_plugin_fwupd_file_to_app_async);
 
-		/* ignore these, they're built in */
-		if (fwupd_remote_get_kind (remote) != FWUPD_REMOTE_KIND_DOWNLOAD)
-			continue;
+	gs_utils_get_content_type_async (file, cancellable,
+					 gs_plugin_fwupd_file_to_app_got_content_type_cb,
+					 g_steal_pointer (&task));
+}
 
-		/* create something that we can use to enable/disable */
-		id = g_strdup_printf ("org.fwupd.%s.remote", fwupd_remote_get_id (remote));
-		app = g_hash_table_lookup (self->cached_sources, id);
-		if (app == NULL) {
-			gboolean is_enabled;
-
-			#if FWUPD_CHECK_VERSION(1, 9, 4)
-			is_enabled = fwupd_remote_has_flag (remote, FWUPD_REMOTE_FLAG_ENABLED);
-			#else
-			is_enabled = fwupd_remote_get_enabled (remote);
-			#endif
-
-			app = gs_app_new (id);
-			gs_app_set_kind (app, AS_COMPONENT_KIND_REPOSITORY);
-			gs_app_set_scope (app, AS_COMPONENT_SCOPE_SYSTEM);
-			gs_app_set_state (app, is_enabled ?
-					  GS_APP_STATE_INSTALLED : GS_APP_STATE_AVAILABLE);
-			gs_app_add_quirk (app, GS_APP_QUIRK_NOT_LAUNCHABLE);
-			gs_app_set_name (app, GS_APP_QUALITY_LOWEST,
-					 fwupd_remote_get_title (remote));
-			gs_app_set_agreement (app, fwupd_remote_get_agreement (remote));
-			gs_app_set_url (app, AS_URL_KIND_HOMEPAGE,
-					fwupd_remote_get_metadata_uri (remote));
-			gs_app_set_metadata (app, "fwupd::remote-id",
-					     fwupd_remote_get_id (remote));
-			gs_app_set_management_plugin (app, plugin);
-			gs_app_set_metadata (app, "GnomeSoftware::PackagingFormat", "fwupd");
-			gs_app_set_metadata (app, "GnomeSoftware::SortKey", "800");
-			gs_app_set_origin_ui (app, _("Firmware"));
-			g_hash_table_insert (self->cached_sources, g_strdup (id), app);
-			g_object_weak_ref (G_OBJECT (app), cached_sources_weak_ref_cb, self);
-		} else {
-			g_object_ref (app);
-			/* The repo-related apps are those installed; due to re-using
-			   cached app, make sure the list is populated from fresh data. */
-			gs_app_list_remove_all (gs_app_get_related (app));
-		}
-		gs_app_list_add (list, app);
-	}
-	return TRUE;
+static GsAppList *
+gs_plugin_fwupd_file_to_app_finish (GsPlugin      *plugin,
+                                    GAsyncResult  *result,
+                                    GError       **error)
+{
+	return g_task_propagate_pointer (G_TASK (result), error);
 }
 
 static void
@@ -2059,6 +2270,7 @@ gs_plugin_fwupd_class_init (GsPluginFwupdClass *klass)
 	object_class->dispose = gs_plugin_fwupd_dispose;
 	object_class->finalize = gs_plugin_fwupd_finalize;
 
+	plugin_class->adopt_app = gs_plugin_fwupd_adopt_app;
 	plugin_class->setup_async = gs_plugin_fwupd_setup_async;
 	plugin_class->setup_finish = gs_plugin_fwupd_setup_finish;
 	plugin_class->refresh_metadata_async = gs_plugin_fwupd_refresh_metadata_async;
@@ -2069,6 +2281,12 @@ gs_plugin_fwupd_class_init (GsPluginFwupdClass *klass)
 	plugin_class->disable_repository_finish = gs_plugin_fwupd_disable_repository_finish;
 	plugin_class->update_apps_async = gs_plugin_fwupd_update_apps_async;
 	plugin_class->update_apps_finish = gs_plugin_fwupd_update_apps_finish;
+	plugin_class->install_app_async = gs_plugin_fwupd_install_app_async;
+	plugin_class->install_app_finish = gs_plugin_fwupd_install_app_finish;
+	plugin_class->list_apps_async = gs_plugin_fwupd_list_apps_async;
+	plugin_class->list_apps_finish = gs_plugin_fwupd_list_apps_finish;
+	plugin_class->file_to_app_async = gs_plugin_fwupd_file_to_app_async;
+	plugin_class->file_to_app_finish = gs_plugin_fwupd_file_to_app_finish;
 }
 
 GType

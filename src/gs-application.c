@@ -322,7 +322,7 @@ reboot_failed_cb (GObject *source, GAsyncResult *res, gpointer user_data)
 		g_warning ("Calling reboot failed: %s", error->message);
 
 	/* cancel trigger */
-	plugin_job = gs_plugin_job_newv (GS_PLUGIN_ACTION_UPDATE_CANCEL, NULL);
+	plugin_job = gs_plugin_job_update_cancel_new (NULL, GS_PLUGIN_UPDATE_CANCEL_FLAGS_NONE);
 	gs_plugin_loader_job_process_async (app->plugin_loader, plugin_job,
 					    app->cancellable,
 					    cancel_trigger_failed_cb,
@@ -901,9 +901,7 @@ launch_activated (GSimpleAction *action,
 		return;
 	}
 
-	launch_job = gs_plugin_job_newv (GS_PLUGIN_ACTION_LAUNCH,
-					 "app", app,
-					 NULL);
+	launch_job = gs_plugin_job_launch_new (app, GS_PLUGIN_LAUNCH_FLAGS_NONE);
 	if (!gs_plugin_loader_job_action (self->plugin_loader, launch_job, self->cancellable, &error)) {
 		g_warning ("Failed to launch app: %s", error->message);
 		return;

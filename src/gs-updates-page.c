@@ -613,8 +613,7 @@ gs_updates_page_get_system_finished_cb (GObject *source_object,
 		       GS_PLUGIN_REFINE_FLAGS_REQUIRE_UPDATE_SEVERITY |
 		       GS_PLUGIN_REFINE_FLAGS_REQUIRE_VERSION;
 
-	plugin_job = gs_plugin_job_refine_new_for_app (app, refine_flags);
-	gs_plugin_job_set_interactive (plugin_job, TRUE);
+	plugin_job = gs_plugin_job_refine_new_for_app (app, GS_PLUGIN_REFINE_JOB_FLAGS_INTERACTIVE, refine_flags);
 	helper = gs_page_helper_new (self, app, plugin_job);
 	gs_plugin_loader_job_process_async (self->plugin_loader, plugin_job,
 					    self->cancellable,
@@ -626,6 +625,7 @@ static void
 gs_updates_page_load (GsUpdatesPage *self)
 {
 	guint64 refine_flags;
+	g_autoptr(GsAppQuery) query = NULL;
 	g_autoptr(GsPluginJob) plugin_job = NULL;
 
 	if (self->action_cnt > 0)
@@ -641,11 +641,10 @@ gs_updates_page_load (GsUpdatesPage *self)
 		       GS_PLUGIN_REFINE_FLAGS_REQUIRE_VERSION;
 	gs_updates_page_set_state (self, GS_UPDATES_PAGE_STATE_ACTION_GET_UPDATES);
 	self->action_cnt++;
-	plugin_job = gs_plugin_job_newv (GS_PLUGIN_ACTION_GET_UPDATES,
-					 "interactive", TRUE,
-					 "refine-flags", refine_flags,
-					 "dedupe-flags", GS_APP_LIST_FILTER_FLAG_NONE,
-					 NULL);
+	query = gs_app_query_new ("is-for-update", GS_APP_QUERY_TRISTATE_TRUE,
+				  "refine-flags", refine_flags,
+				  NULL);
+	plugin_job = gs_plugin_job_list_apps_new (query, GS_PLUGIN_LIST_APPS_FLAGS_INTERACTIVE);
 	gs_plugin_loader_job_process_async (self->plugin_loader, plugin_job,
 					    self->cancellable,
 					    (GAsyncReadyCallback) gs_updates_page_get_updates_cb,
@@ -935,11 +934,8 @@ gs_updates_page_upgrade_download_cb (GsUpgradeBanner *upgrade_banner,
 	g_clear_object (&self->cancellable_upgrade);
 	self->cancellable_upgrade = g_cancellable_new ();
 	g_debug ("Starting upgrade download with cancellable %p", self->cancellable_upgrade);
-	plugin_job = gs_plugin_job_newv (GS_PLUGIN_ACTION_UPGRADE_DOWNLOAD,
-					 "interactive", TRUE,
-					 "app", app,
-					 "propagate-error", TRUE,
-					 NULL);
+	plugin_job = gs_plugin_job_upgrade_download_new (app, GS_PLUGIN_UPGRADE_DOWNLOAD_FLAGS_INTERACTIVE);
+	gs_plugin_job_set_propagate_error (plugin_job, TRUE);
 	helper = gs_page_helper_new (self, app, plugin_job);
 	gs_plugin_loader_job_process_async (self->plugin_loader, plugin_job,
 					    self->cancellable_upgrade,
@@ -984,9 +980,7 @@ upgrade_reboot_failed_cb (GObject *source,
 	}
 
 	/* cancel trigger */
-	plugin_job = gs_plugin_job_newv (GS_PLUGIN_ACTION_UPDATE_CANCEL,
-					 "app", app,
-					 NULL);
+	plugin_job = gs_plugin_job_update_cancel_new (app, GS_PLUGIN_UPDATE_CANCEL_FLAGS_INTERACTIVE);
 	gs_plugin_loader_job_process_async (self->plugin_loader, plugin_job,
 					    self->cancellable,
 					    _cancel_trigger_failed_cb,
@@ -1028,10 +1022,7 @@ trigger_upgrade (GsUpdatesPage *self)
 	g_clear_object (&self->cancellable_upgrade);
 	self->cancellable_upgrade = g_cancellable_new ();
 
-	plugin_job = gs_plugin_job_newv (GS_PLUGIN_ACTION_UPGRADE_TRIGGER,
-					 "interactive", TRUE,
-					 "app", upgrade,
-					 NULL);
+	plugin_job = gs_plugin_job_upgrade_trigger_new (upgrade, GS_PLUGIN_UPGRADE_TRIGGER_FLAGS_INTERACTIVE);
 	gs_plugin_loader_job_process_async (self->plugin_loader, plugin_job,
 					    self->cancellable_upgrade,
 					    upgrade_trigger_finished_cb,

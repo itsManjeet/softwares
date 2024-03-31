@@ -32,7 +32,8 @@
 /**
  * gs_plugin_refine_data_new:
  * @list: list of #GsApps to refine
- * @flags: refine flags
+ * @job_flags: job flags
+ * @refine_flags: refine flags
  *
  * Context data for a call to #GsPluginClass.refine_async.
  *
@@ -40,12 +41,14 @@
  * Since: 42
  */
 GsPluginRefineData *
-gs_plugin_refine_data_new (GsAppList           *list,
-                           GsPluginRefineFlags  flags)
+gs_plugin_refine_data_new (GsAppList              *list,
+                           GsPluginRefineJobFlags  job_flags,
+                           GsPluginRefineFlags     refine_flags)
 {
 	g_autoptr(GsPluginRefineData) data = g_new0 (GsPluginRefineData, 1);
 	data->list = g_object_ref (list);
-	data->flags = flags;
+	data->job_flags = job_flags;
+	data->refine_flags = refine_flags;
 
 	return g_steal_pointer (&data);
 }
@@ -54,7 +57,8 @@ gs_plugin_refine_data_new (GsAppList           *list,
  * gs_plugin_refine_data_new_task:
  * @source_object: task source object
  * @list: list of #GsApps to refine
- * @flags: refine flags
+ * @job_flags: job flags
+ * @refine_flags: refine flags
  * @cancellable: (nullable): a #GCancellable, or %NULL
  * @callback: function to call once asynchronous operation is finished
  * @user_data: data to pass to @callback
@@ -69,15 +73,16 @@ gs_plugin_refine_data_new (GsAppList           *list,
  * Since: 42
  */
 GTask *
-gs_plugin_refine_data_new_task (gpointer             source_object,
-                                GsAppList           *list,
-                                GsPluginRefineFlags  flags,
-                                GCancellable        *cancellable,
-                                GAsyncReadyCallback  callback,
-                                gpointer             user_data)
+gs_plugin_refine_data_new_task (gpointer                source_object,
+                                GsAppList              *list,
+                                GsPluginRefineJobFlags  job_flags,
+                                GsPluginRefineFlags     refine_flags,
+                                GCancellable           *cancellable,
+                                GAsyncReadyCallback     callback,
+                                gpointer                user_data)
 {
 	g_autoptr(GTask) task = g_task_new (source_object, cancellable, callback, user_data);
-	g_task_set_task_data (task, gs_plugin_refine_data_new (list, flags), (GDestroyNotify) gs_plugin_refine_data_free);
+	g_task_set_task_data (task, gs_plugin_refine_data_new (list, job_flags, refine_flags), (GDestroyNotify) gs_plugin_refine_data_free);
 	return g_steal_pointer (&task);
 }
 
@@ -426,5 +431,542 @@ void
 gs_plugin_update_apps_data_free (GsPluginUpdateAppsData *data)
 {
 	g_clear_object (&data->apps);
+	g_free (data);
+}
+
+/**
+ * gs_plugin_manage_app_data_new:
+ * @app: (not-nullable) (transfer none): an app to manage
+ * @flags: manage app flags
+ *
+ * Common context data for a call to #GsPluginClass.install_app_async,
+ * #GsPluginClass.remove_app_async.
+ *
+ * Returns: (transfer full): context data structure
+ * Since: 47
+ */
+GsPluginManageAppData *
+gs_plugin_manage_app_data_new (GsApp		      *app,
+			       GsPluginManageAppFlags  flags)
+{
+	g_autoptr(GsPluginManageAppData) data = g_new0 (GsPluginManageAppData, 1);
+	data->app = g_object_ref (app);
+	data->flags = flags;
+
+	return g_steal_pointer (&data);
+}
+
+/**
+ * gs_plugin_manage_app_data_new_task:
+ * @source_object: task source object
+ * @app: (not-nullable) (transfer none): an app to manage
+ * @flags: manage app flags
+ * @cancellable: (nullable): a #GCancellable, or %NULL
+ * @callback: function to call once asynchronous operation is finished
+ * @user_data: data to pass to @callback
+ *
+ * Create a #GTask for a manage app operation with the given arguments. The task
+ * data will be set to a #GsPluginManageAppData containing the given context.
+ *
+ * This is essentially a combination of gs_plugin_manage_app_data_new(),
+ * g_task_new() and g_task_set_task_data().
+ *
+ * Returns: (transfer full): new #GTask with the given context data
+ * Since: 47
+ */
+GTask *
+gs_plugin_manage_app_data_new_task (gpointer		   source_object,
+				    GsApp		  *app,
+				    GsPluginManageAppFlags flags,
+				    GCancellable	  *cancellable,
+				    GAsyncReadyCallback	   callback,
+				    gpointer		   user_data)
+{
+	g_autoptr(GTask) task = g_task_new (source_object, cancellable, callback, user_data);
+	g_task_set_task_data (task, gs_plugin_manage_app_data_new (app, flags), (GDestroyNotify) gs_plugin_manage_app_data_free);
+	return g_steal_pointer (&task);
+}
+
+/**
+ * gs_plugin_manage_app_data_free:
+ * @data: (transfer full): a #GsPluginManageAppData
+ *
+ * Free the given @data.
+ *
+ * Since: 47
+ */
+void
+gs_plugin_manage_app_data_free (GsPluginManageAppData *data)
+{
+	g_clear_object (&data->app);
+	g_free (data);
+}
+
+/**
+ * gs_plugin_update_cancel_data_new:
+ * @app: (nullable) (transfer none): an app to cancel offline update on, or %NULL for all plugins
+ * @flags: operation flags
+ *
+ * Common context data for a call to #GsPluginClass.update_cancel_async.
+ *
+ * Returns: (transfer full): context data structure
+ * Since: 47
+ */
+GsPluginUpdateCancelData *
+gs_plugin_update_cancel_data_new (GsApp                     *app,
+				  GsPluginUpdateCancelFlags  flags)
+{
+	g_autoptr(GsPluginUpdateCancelData) data = g_new0 (GsPluginUpdateCancelData, 1);
+	data->app = app == NULL ? NULL : g_object_ref (app);
+	data->flags = flags;
+
+	return g_steal_pointer (&data);
+}
+
+/**
+ * gs_plugin_update_cancel_data_new_task:
+ * @source_object: task source object
+ * @app: (nullable) (transfer none): an app to cancel offline update on, or %NULL for all plugins
+ * @flags: operation flags
+ * @cancellable: (nullable): a #GCancellable, or %NULL
+ * @callback: function to call once asynchronous operation is finished
+ * @user_data: data to pass to @callback
+ *
+ * Create a #GTask for an update-cancel operation with the given arguments. The task
+ * data will be set to a #GsPluginUpdateCancelData containing the given context.
+ *
+ * This is essentially a combination of gs_plugin_update_cancel_data_new(),
+ * g_task_new() and g_task_set_task_data().
+ *
+ * Returns: (transfer full): new #GTask with the given context data
+ * Since: 47
+ */
+GTask *
+gs_plugin_update_cancel_data_new_task (gpointer                  source_object,
+				       GsApp                    *app,
+				       GsPluginUpdateCancelFlags flags,
+				       GCancellable             *cancellable,
+				       GAsyncReadyCallback       callback,
+				       gpointer                  user_data)
+{
+	g_autoptr(GTask) task = g_task_new (source_object, cancellable, callback, user_data);
+	g_task_set_task_data (task, gs_plugin_update_cancel_data_new (app, flags), (GDestroyNotify) gs_plugin_update_cancel_data_free);
+	return g_steal_pointer (&task);
+}
+
+/**
+ * gs_plugin_update_cancel_data_free:
+ * @data: (transfer full): a #GsPluginUpdateCancelData
+ *
+ * Free the given @data.
+ *
+ * Since: 47
+ */
+void
+gs_plugin_update_cancel_data_free (GsPluginUpdateCancelData *data)
+{
+	g_clear_object (&data->app);
+	g_free (data);
+}
+
+/**
+ * gs_plugin_upgrade_download_data_new:
+ * @app: (not-nullable) (transfer none): a #GsApp, with kind %AS_COMPONENT_KIND_OPERATING_SYSTEM
+ * @flags: operation flags
+ *
+ * Common context data for a call to #GsPluginClass.upgrade_download_async.
+ *
+ * Returns: (transfer full): context data structure
+ * Since: 47
+ */
+GsPluginUpgradeDownloadData *
+gs_plugin_upgrade_download_data_new (GsApp                        *app,
+				     GsPluginUpgradeDownloadFlags  flags)
+{
+	g_autoptr(GsPluginUpgradeDownloadData) data = g_new0 (GsPluginUpgradeDownloadData, 1);
+	data->app = g_object_ref (app);
+	data->flags = flags;
+
+	return g_steal_pointer (&data);
+}
+
+/**
+ * gs_plugin_upgrade_download_data_new_task:
+ * @source_object: task source object
+ * @app: (not-nullable) (transfer none): a #GsApp, with kind %AS_COMPONENT_KIND_OPERATING_SYSTEM
+ * @flags: operation flags
+ * @cancellable: (nullable): a #GCancellable, or %NULL
+ * @callback: function to call once asynchronous operation is finished
+ * @user_data: data to pass to @callback
+ *
+ * Create a #GTask for an upgrade-download operation with the given arguments. The task
+ * data will be set to a #GsPluginUpgradeDownloadData containing the given context.
+ *
+ * This is essentially a combination of gs_plugin_upgrade_download_data_new(),
+ * g_task_new() and g_task_set_task_data().
+ *
+ * Returns: (transfer full): new #GTask with the given context data
+ * Since: 47
+ */
+GTask *
+gs_plugin_upgrade_download_data_new_task (gpointer                     source_object,
+					  GsApp                       *app,
+					  GsPluginUpgradeDownloadFlags flags,
+					  GCancellable                *cancellable,
+					  GAsyncReadyCallback          callback,
+					  gpointer                     user_data)
+{
+	g_autoptr(GTask) task = g_task_new (source_object, cancellable, callback, user_data);
+	g_task_set_task_data (task, gs_plugin_upgrade_download_data_new (app, flags), (GDestroyNotify) gs_plugin_upgrade_download_data_free);
+	return g_steal_pointer (&task);
+}
+
+/**
+ * gs_plugin_upgrade_download_data_free:
+ * @data: (transfer full): a #GsPluginUpgradeDownloadData
+ *
+ * Free the given @data.
+ *
+ * Since: 47
+ */
+void
+gs_plugin_upgrade_download_data_free (GsPluginUpgradeDownloadData *data)
+{
+	g_clear_object (&data->app);
+	g_free (data);
+}
+
+/**
+ * gs_plugin_upgrade_trigger_data_new:
+ * @app: (not-nullable) (transfer none): a #GsApp, with kind %AS_COMPONENT_KIND_OPERATING_SYSTEM
+ * @flags: operation flags
+ *
+ * Common context data for a call to #GsPluginClass.upgrade_trigger_async.
+ *
+ * Returns: (transfer full): context data structure
+ * Since: 47
+ */
+GsPluginUpgradeTriggerData *
+gs_plugin_upgrade_trigger_data_new (GsApp                      *app,
+				    GsPluginUpgradeTriggerFlags flags)
+{
+	g_autoptr(GsPluginUpgradeTriggerData) data = g_new0 (GsPluginUpgradeTriggerData, 1);
+	data->app = g_object_ref (app);
+	data->flags = flags;
+
+	return g_steal_pointer (&data);
+}
+
+/**
+ * gs_plugin_upgrade_trigger_data_new_task:
+ * @source_object: task source object
+ * @app: (not-nullable) (transfer none): a #GsApp, with kind %AS_COMPONENT_KIND_OPERATING_SYSTEM
+ * @flags: operation flags
+ * @cancellable: (nullable): a #GCancellable, or %NULL
+ * @callback: function to call once asynchronous operation is finished
+ * @user_data: data to pass to @callback
+ *
+ * Create a #GTask for an upgrade-trigger operation with the given arguments. The task
+ * data will be set to a #GsPluginUpgradeTriggerData containing the given context.
+ *
+ * This is essentially a combination of gs_plugin_upgrade_trigger_data_new(),
+ * g_task_new() and g_task_set_task_data().
+ *
+ * Returns: (transfer full): new #GTask with the given context data
+ * Since: 47
+ */
+GTask *
+gs_plugin_upgrade_trigger_data_new_task (gpointer                    source_object,
+					 GsApp                      *app,
+					 GsPluginUpgradeTriggerFlags flags,
+					 GCancellable               *cancellable,
+					 GAsyncReadyCallback         callback,
+					 gpointer                    user_data)
+{
+	g_autoptr(GTask) task = g_task_new (source_object, cancellable, callback, user_data);
+	g_task_set_task_data (task, gs_plugin_upgrade_trigger_data_new (app, flags), (GDestroyNotify) gs_plugin_upgrade_trigger_data_free);
+	return g_steal_pointer (&task);
+}
+
+/**
+ * gs_plugin_upgrade_trigger_data_free:
+ * @data: (transfer full): a #GsPluginUpgradeTriggerData
+ *
+ * Free the given @data.
+ *
+ * Since: 47
+ */
+void
+gs_plugin_upgrade_trigger_data_free (GsPluginUpgradeTriggerData *data)
+{
+	g_clear_object (&data->app);
+	g_free (data);
+}
+
+/**
+ * gs_plugin_launch_data_new:
+ * @app: (not-nullable) (transfer none): a #GsApp
+ * @flags: operation flags
+ *
+ * Common context data for a call to #GsPluginClass.launch_async.
+ *
+ * Returns: (transfer full): context data structure
+ * Since: 47
+ */
+GsPluginLaunchData *
+gs_plugin_launch_data_new (GsApp              *app,
+			   GsPluginLaunchFlags flags)
+{
+	g_autoptr(GsPluginLaunchData) data = g_new0 (GsPluginLaunchData, 1);
+	data->app = g_object_ref (app);
+	data->flags = flags;
+
+	return g_steal_pointer (&data);
+}
+
+/**
+ * gs_plugin_launch_data_new_task:
+ * @source_object: task source object
+ * @app: (not-nullable) (transfer none): a #GsApp
+ * @flags: operation flags
+ * @cancellable: (nullable): a #GCancellable, or %NULL
+ * @callback: function to call once asynchronous operation is finished
+ * @user_data: data to pass to @callback
+ *
+ * Create a #GTask for a launch operation with the given arguments. The task
+ * data will be set to a #GsPluginLaunchData containing the given context.
+ *
+ * This is essentially a combination of gs_plugin_launch_data_new(),
+ * g_task_new() and g_task_set_task_data().
+ *
+ * Returns: (transfer full): new #GTask with the given context data
+ * Since: 47
+ */
+GTask *
+gs_plugin_launch_data_new_task (gpointer            source_object,
+				GsApp              *app,
+				GsPluginLaunchFlags flags,
+				GCancellable        *cancellable,
+				GAsyncReadyCallback  callback,
+				gpointer             user_data)
+{
+	g_autoptr(GTask) task = g_task_new (source_object, cancellable, callback, user_data);
+	g_task_set_task_data (task, gs_plugin_launch_data_new (app, flags), (GDestroyNotify) gs_plugin_launch_data_free);
+	return g_steal_pointer (&task);
+}
+
+/**
+ * gs_plugin_launch_data_free:
+ * @data: (transfer full): a #GsPluginLaunchData
+ *
+ * Free the given @data.
+ *
+ * Since: 47
+ */
+void
+gs_plugin_launch_data_free (GsPluginLaunchData *data)
+{
+	g_clear_object (&data->app);
+	g_free (data);
+}
+
+/**
+ * gs_plugin_file_to_app_data_new:
+ * @file: (not-nullable) (transfer none): a #GFile
+ * @flags: operation flags
+ *
+ * Common context data for a call to #GsPluginClass.file_to_app_async.
+ *
+ * Returns: (transfer full): context data structure
+ * Since: 47
+ */
+GsPluginFileToAppData *
+gs_plugin_file_to_app_data_new (GFile                 *file,
+				GsPluginFileToAppFlags flags)
+{
+	g_autoptr(GsPluginFileToAppData) data = g_new0 (GsPluginFileToAppData, 1);
+	data->file = g_object_ref (file);
+	data->flags = flags;
+
+	return g_steal_pointer (&data);
+}
+
+/**
+ * gs_plugin_file_to_app_data_new_task:
+ * @source_object: task source object
+ * @file: (not-nullable) (transfer none): a #GFile
+ * @flags: operation flags
+ * @cancellable: (nullable): a #GCancellable, or %NULL
+ * @callback: function to call once asynchronous operation is finished
+ * @user_data: data to pass to @callback
+ *
+ * Create a #GTask for a file-to-app operation with the given arguments. The task
+ * data will be set to a #GsPluginFileToAppData containing the given context.
+ *
+ * This is essentially a combination of gs_plugin_file_to_app_data_new(),
+ * g_task_new() and g_task_set_task_data().
+ *
+ * Returns: (transfer full): new #GTask with the given context data
+ * Since: 47
+ */
+GTask *
+gs_plugin_file_to_app_data_new_task (gpointer               source_object,
+				     GFile                 *file,
+				     GsPluginFileToAppFlags flags,
+				     GCancellable          *cancellable,
+				     GAsyncReadyCallback    callback,
+				     gpointer               user_data)
+{
+	g_autoptr(GTask) task = g_task_new (source_object, cancellable, callback, user_data);
+	g_task_set_task_data (task, gs_plugin_file_to_app_data_new (file, flags), (GDestroyNotify) gs_plugin_file_to_app_data_free);
+	return g_steal_pointer (&task);
+}
+
+/**
+ * gs_plugin_file_to_app_data_free:
+ * @data: (transfer full): a #GsPluginFileToAppData
+ *
+ * Free the given @data.
+ *
+ * Since: 47
+ */
+void
+gs_plugin_file_to_app_data_free (GsPluginFileToAppData *data)
+{
+	g_clear_object (&data->file);
+	g_free (data);
+}
+
+/**
+ * gs_plugin_url_to_app_data_new:
+ * @url: (not-nullable): a URL
+ * @flags: operation flags
+ *
+ * Common context data for a call to #GsPluginClass.url_to_app_async.
+ *
+ * Returns: (transfer full): context data structure
+ * Since: 47
+ */
+GsPluginUrlToAppData *
+gs_plugin_url_to_app_data_new (const gchar          *url,
+			       GsPluginUrlToAppFlags flags)
+{
+	g_autoptr(GsPluginUrlToAppData) data = g_new0 (GsPluginUrlToAppData, 1);
+	data->url = g_strdup (url);
+	data->flags = flags;
+
+	return g_steal_pointer (&data);
+}
+
+/**
+ * gs_plugin_url_to_app_data_new_task:
+ * @source_object: task source object
+ * @url: (not-nullable): a URL
+ * @flags: operation flags
+ * @cancellable: (nullable): a #GCancellable, or %NULL
+ * @callback: function to call once asynchronous operation is finished
+ * @user_data: data to pass to @callback
+ *
+ * Create a #GTask for a url-to-app operation with the given arguments. The task
+ * data will be set to a #GsPluginUrlToAppData containing the given context.
+ *
+ * This is essentially a combination of gs_plugin_url_to_app_data_new(),
+ * g_task_new() and g_task_set_task_data().
+ *
+ * Returns: (transfer full): new #GTask with the given context data
+ * Since: 47
+ */
+GTask *
+gs_plugin_url_to_app_data_new_task (gpointer              source_object,
+				    const gchar          *url,
+				    GsPluginUrlToAppFlags flags,
+				    GCancellable         *cancellable,
+				    GAsyncReadyCallback   callback,
+				    gpointer              user_data)
+{
+	g_autoptr(GTask) task = g_task_new (source_object, cancellable, callback, user_data);
+	g_task_set_task_data (task, gs_plugin_url_to_app_data_new (url, flags), (GDestroyNotify) gs_plugin_url_to_app_data_free);
+	return g_steal_pointer (&task);
+}
+
+/**
+ * gs_plugin_url_to_app_data_free:
+ * @data: (transfer full): a #GsPluginUrlToAppData
+ *
+ * Free the given @data.
+ *
+ * Since: 47
+ */
+void
+gs_plugin_url_to_app_data_free (GsPluginUrlToAppData *data)
+{
+	g_free (data->url);
+	g_free (data);
+}
+
+/**
+ * gs_plugin_get_langpacks_data_new:
+ * @locale: (not-nullable): a #LANGUAGE_CODE or #LOCALE, e.g. "ja" or "ja_JP"
+ * @flags: operation flags
+ *
+ * Common context data for a call to #GsPluginClass.get_langpacks_async.
+ *
+ * Returns: (transfer full): context data structure
+ * Since: 47
+ */
+GsPluginGetLangpacksData *
+gs_plugin_get_langpacks_data_new (const gchar              *locale,
+				  GsPluginGetLangpacksFlags flags)
+{
+	g_autoptr(GsPluginGetLangpacksData) data = g_new0 (GsPluginGetLangpacksData, 1);
+	data->locale = g_strdup (locale);
+	data->flags = flags;
+
+	return g_steal_pointer (&data);
+}
+
+/**
+ * gs_plugin_get_langpacks_data_new_task:
+ * @source_object: task source object
+ * @locale: (not-nullable): a #LANGUAGE_CODE or #LOCALE, e.g. "ja" or "ja_JP"
+ * @flags: operation flags
+ * @cancellable: (nullable): a #GCancellable, or %NULL
+ * @callback: function to call once asynchronous operation is finished
+ * @user_data: data to pass to @callback
+ *
+ * Create a #GTask for a get-langpacks operation with the given arguments. The task
+ * data will be set to a #GsPluginGetLangpacksData containing the given context.
+ *
+ * This is essentially a combination of gs_plugin_get_langpacks_data_new(),
+ * g_task_new() and g_task_set_task_data().
+ *
+ * Returns: (transfer full): new #GTask with the given context data
+ * Since: 47
+ */
+GTask *
+gs_plugin_get_langpacks_data_new_task (gpointer                  source_object,
+				       const gchar              *locale,
+				       GsPluginGetLangpacksFlags flags,
+				       GCancellable             *cancellable,
+				       GAsyncReadyCallback       callback,
+				       gpointer                  user_data)
+{
+	g_autoptr(GTask) task = g_task_new (source_object, cancellable, callback, user_data);
+	g_task_set_task_data (task, gs_plugin_get_langpacks_data_new (locale, flags), (GDestroyNotify) gs_plugin_get_langpacks_data_free);
+	return g_steal_pointer (&task);
+}
+
+/**
+ * gs_plugin_get_langpacks_data_free:
+ * @data: (transfer full): a #GsPluginGetLangpacksData
+ *
+ * Free the given @data.
+ *
+ * Since: 47
+ */
+void
+gs_plugin_get_langpacks_data_free (GsPluginGetLangpacksData *data)
+{
+	g_free (data->locale);
 	g_free (data);
 }

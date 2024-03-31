@@ -143,16 +143,23 @@ gs_plugin_job_list_apps_set_property (GObject      *object,
 }
 
 static gboolean
+gs_plugin_job_list_apps_get_interactive (GsPluginJob *job)
+{
+	GsPluginJobListApps *self = GS_PLUGIN_JOB_LIST_APPS (job);
+	return (self->flags & GS_PLUGIN_LIST_APPS_FLAGS_INTERACTIVE) != 0;
+}
+
+static gboolean
 filter_valid_apps (GsApp    *app,
                    gpointer  user_data)
 {
 	GsPluginJobListApps *self = GS_PLUGIN_JOB_LIST_APPS (user_data);
-	GsPluginRefineFlags refine_flags = GS_PLUGIN_REFINE_FLAGS_NONE;
+	GsPluginRefineJobFlags refine_job_flags = GS_PLUGIN_REFINE_JOB_FLAGS_NONE;
 
 	if (self->query)
-		refine_flags = gs_app_query_get_refine_flags (self->query);
+		refine_job_flags = gs_app_query_get_refine_job_flags (self->query);
 
-	return gs_plugin_loader_app_is_valid (app, refine_flags);
+	return gs_plugin_loader_app_is_valid (app, refine_job_flags);
 }
 
 static gboolean
@@ -324,6 +331,7 @@ finish_op (GTask  *task,
 	GCancellable *cancellable = g_task_get_cancellable (task);
 	GsPluginLoader *plugin_loader = g_task_get_task_data (task);
 	g_autoptr(GsAppList) merged_list = NULL;
+	GsPluginRefineJobFlags refine_job_flags = GS_PLUGIN_REFINE_JOB_FLAGS_NONE;
 	GsPluginRefineFlags refine_flags = GS_PLUGIN_REFINE_FLAGS_NONE;
 	GsAppQueryLicenseType license_type = GS_APP_QUERY_LICENSE_ANY;
 	g_autoptr(GError) error_owned = g_steal_pointer (&error);
@@ -350,6 +358,7 @@ finish_op (GTask  *task,
 
 	/* run refine() on each one if required */
 	if (self->query != NULL) {
+		refine_job_flags = gs_app_query_get_refine_job_flags (self->query);
 		refine_flags = gs_app_query_get_refine_flags (self->query);
 		license_type = gs_app_query_get_license_type (self->query);
 	}
@@ -366,8 +375,8 @@ finish_op (GTask  *task,
 		g_autoptr(GsPluginJob) refine_job = NULL;
 
 		refine_job = gs_plugin_job_refine_new (merged_list,
-						       refine_flags |
-						       GS_PLUGIN_REFINE_FLAGS_DISABLE_FILTERING);
+						       refine_job_flags | GS_PLUGIN_REFINE_JOB_FLAGS_DISABLE_FILTERING,
+						       refine_flags);
 		gs_plugin_loader_job_process_async (plugin_loader, refine_job,
 						    cancellable,
 						    refine_cb,
@@ -414,23 +423,27 @@ finish_task (GTask     *task,
 	GsAppListFilterFunc filter_func = NULL;
 	gpointer filter_func_data = NULL;
 	guint max_results = 0;
+	gboolean disable_filtering = FALSE;
 	g_autofree gchar *job_debug = NULL;
-
-	/* Standard filtering.
-	 *
-	 * FIXME: It feels like this filter should be done in a different layer. */
-	gs_app_list_filter (merged_list, filter_valid_apps, self);
-	gs_app_list_filter (merged_list, app_filter_qt_for_gtk_and_compatible, plugin_loader);
 
 	if (self->query != NULL) {
 		license_type = gs_app_query_get_license_type (self->query);
 		developer_verified_type = gs_app_query_get_developer_verified_type (self->query);
+		disable_filtering = (gs_app_query_get_refine_job_flags (self->query) & GS_PLUGIN_REFINE_JOB_FLAGS_DISABLE_FILTERING) != 0;
 	}
 
-	if (license_type == GS_APP_QUERY_LICENSE_FOSS)
-		gs_app_list_filter (merged_list, filter_freely_licensed_apps, self);
-	if (developer_verified_type == GS_APP_QUERY_DEVELOPER_VERIFIED_ONLY)
-		gs_app_list_filter (merged_list, filter_developer_verified_apps, self);
+	if (!disable_filtering) {
+		/* Standard filtering.
+		 *
+		 * FIXME: It feels like this filter should be done in a different layer. */
+		gs_app_list_filter (merged_list, filter_valid_apps, self);
+		gs_app_list_filter (merged_list, app_filter_qt_for_gtk_and_compatible, plugin_loader);
+
+		if (license_type == GS_APP_QUERY_LICENSE_FOSS)
+			gs_app_list_filter (merged_list, filter_freely_licensed_apps, self);
+		if (developer_verified_type == GS_APP_QUERY_DEVELOPER_VERIFIED_ONLY)
+			gs_app_list_filter (merged_list, filter_developer_verified_apps, self);
+	}
 
 	/* Caller-specified filtering. */
 	if (self->query != NULL)
@@ -509,6 +522,7 @@ gs_plugin_job_list_apps_class_init (GsPluginJobListAppsClass *klass)
 	object_class->get_property = gs_plugin_job_list_apps_get_property;
 	object_class->set_property = gs_plugin_job_list_apps_set_property;
 
+	job_class->get_interactive = gs_plugin_job_list_apps_get_interactive;
 	job_class->run_async = gs_plugin_job_list_apps_run_async;
 	job_class->run_finish = gs_plugin_job_list_apps_run_finish;
 

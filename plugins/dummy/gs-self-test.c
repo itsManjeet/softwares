@@ -51,9 +51,7 @@ gs_plugins_dummy_install_func (GsPluginLoader *plugin_loader)
 	plugin = gs_plugin_loader_find_plugin (plugin_loader, "dummy");
 	gs_app_set_management_plugin (app, plugin);
 	gs_app_set_state (app, GS_APP_STATE_AVAILABLE);
-	plugin_job = gs_plugin_job_newv (GS_PLUGIN_ACTION_INSTALL,
-					 "app", app,
-					 NULL);
+	plugin_job = gs_plugin_job_manage_app_new (app, GS_PLUGIN_MANAGE_APP_FLAGS_INSTALL);
 	ret = gs_plugin_loader_job_action (plugin_loader, plugin_job, NULL, &error);
 	gs_test_flush_main_context ();
 	g_assert_no_error (error);
@@ -62,9 +60,7 @@ gs_plugins_dummy_install_func (GsPluginLoader *plugin_loader)
 
 	/* remove */
 	g_object_unref (plugin_job);
-	plugin_job = gs_plugin_job_newv (GS_PLUGIN_ACTION_REMOVE,
-					 "app", app,
-					 NULL);
+	plugin_job = gs_plugin_job_manage_app_new (app, GS_PLUGIN_MANAGE_APP_FLAGS_REMOVE);
 	ret = gs_plugin_loader_job_action (plugin_loader, plugin_job, NULL, &error);
 	gs_test_flush_main_context ();
 	g_assert_no_error (error);
@@ -135,6 +131,7 @@ gs_plugins_dummy_refine_func (GsPluginLoader *plugin_loader)
 	plugin = gs_plugin_loader_find_plugin (plugin_loader, "dummy");
 	gs_app_set_management_plugin (app, plugin);
 	plugin_job = gs_plugin_job_refine_new_for_app (app,
+						       GS_PLUGIN_REFINE_JOB_FLAGS_NONE,
 						       GS_PLUGIN_REFINE_FLAGS_REQUIRE_DESCRIPTION |
 						       GS_PLUGIN_REFINE_FLAGS_REQUIRE_LICENSE |
 						       GS_PLUGIN_REFINE_FLAGS_REQUIRE_URL);
@@ -161,7 +158,7 @@ gs_plugins_dummy_metadata_quirks (GsPluginLoader *plugin_loader)
 	app = gs_app_new ("chiron.desktop");
 	plugin = gs_plugin_loader_find_plugin (plugin_loader, "dummy");
 	gs_app_set_management_plugin (app, plugin);
-	plugin_job = gs_plugin_job_refine_new_for_app (app, GS_PLUGIN_REFINE_FLAGS_REQUIRE_DESCRIPTION);
+	plugin_job = gs_plugin_job_refine_new_for_app (app, GS_PLUGIN_REFINE_JOB_FLAGS_NONE, GS_PLUGIN_REFINE_FLAGS_REQUIRE_DESCRIPTION);
 	ret = gs_plugin_loader_job_action (plugin_loader, plugin_job, NULL, &error);
 	gs_test_flush_main_context ();
 	g_assert_no_error (error);
@@ -176,7 +173,7 @@ gs_plugins_dummy_metadata_quirks (GsPluginLoader *plugin_loader)
 	gs_app_set_metadata (app, "GnomeSoftware::quirks::not-launchable", "true");
 
 	g_object_unref (plugin_job);
-	plugin_job = gs_plugin_job_refine_new_for_app (app, GS_PLUGIN_REFINE_FLAGS_REQUIRE_DESCRIPTION);
+	plugin_job = gs_plugin_job_refine_new_for_app (app, GS_PLUGIN_REFINE_JOB_FLAGS_NONE, GS_PLUGIN_REFINE_FLAGS_REQUIRE_DESCRIPTION);
 	ret = gs_plugin_loader_job_action (plugin_loader, plugin_job, NULL, &error);
 	gs_test_flush_main_context ();
 	g_assert_no_error (error);
@@ -188,7 +185,7 @@ gs_plugins_dummy_metadata_quirks (GsPluginLoader *plugin_loader)
 	gs_app_set_metadata (app, "GnomeSoftware::quirks::not-launchable", "false");
 
 	g_object_unref (plugin_job);
-	plugin_job = gs_plugin_job_refine_new_for_app (app, GS_PLUGIN_REFINE_FLAGS_REQUIRE_DESCRIPTION);
+	plugin_job = gs_plugin_job_refine_new_for_app (app, GS_PLUGIN_REFINE_JOB_FLAGS_NONE, GS_PLUGIN_REFINE_FLAGS_REQUIRE_DESCRIPTION);
 	ret = gs_plugin_loader_job_action (plugin_loader, plugin_job, NULL, &error);
 	gs_test_flush_main_context ();
 	g_assert_no_error (error);
@@ -209,7 +206,7 @@ gs_plugins_dummy_key_colors_func (GsPluginLoader *plugin_loader)
 
 	/* get the extra bits */
 	app = gs_app_new ("chiron.desktop");
-	plugin_job = gs_plugin_job_refine_new_for_app (app, GS_PLUGIN_REFINE_FLAGS_REQUIRE_ICON);
+	plugin_job = gs_plugin_job_refine_new_for_app (app, GS_PLUGIN_REFINE_JOB_FLAGS_NONE, GS_PLUGIN_REFINE_FLAGS_REQUIRE_ICON);
 	ret = gs_plugin_loader_job_action (plugin_loader, plugin_job, NULL, &error);
 	gs_test_flush_main_context ();
 	g_assert_no_error (error);
@@ -238,13 +235,16 @@ gs_plugins_dummy_updates_func (GsPluginLoader *plugin_loader)
 	GsApp *app;
 	g_autoptr(GError) error = NULL;
 	g_autoptr(GsAppList) list = NULL;
+	g_autoptr(GsAppQuery) query = NULL;
 	g_autoptr(GsPluginJob) plugin_job = NULL;
 
 	/* get the updates list */
-	plugin_job = gs_plugin_job_newv (GS_PLUGIN_ACTION_GET_UPDATES,
-					 "refine-flags", GS_PLUGIN_REFINE_FLAGS_REQUIRE_ICON |
-							 GS_PLUGIN_REFINE_FLAGS_REQUIRE_UPDATE_DETAILS,
-					 NULL);
+	query = gs_app_query_new ("is-for-update", GS_APP_QUERY_TRISTATE_TRUE,
+				  "refine-flags", GS_PLUGIN_REFINE_FLAGS_REQUIRE_ICON |
+						  GS_PLUGIN_REFINE_FLAGS_REQUIRE_UPDATE_DETAILS,
+				  "sort-func", gs_utils_app_sort_name,
+				  NULL);
+	plugin_job = gs_plugin_job_list_apps_new (query, GS_PLUGIN_LIST_APPS_FLAGS_NONE);
 	list = gs_plugin_loader_job_process (plugin_loader, plugin_job, NULL, &error);
 	gs_test_flush_main_context ();
 	g_assert_no_error (error);
@@ -306,9 +306,7 @@ gs_plugins_dummy_distro_upgrades_func (GsPluginLoader *plugin_loader)
 
 	/* download the update */
 	g_object_unref (plugin_job);
-	plugin_job = gs_plugin_job_newv (GS_PLUGIN_ACTION_UPGRADE_DOWNLOAD,
-					 "app", app,
-					 NULL);
+	plugin_job = gs_plugin_job_upgrade_download_new (app, GS_PLUGIN_UPGRADE_DOWNLOAD_FLAGS_NONE);
 	ret = gs_plugin_loader_job_action (plugin_loader, plugin_job, NULL, &error);
 	gs_test_flush_main_context ();
 	g_assert_no_error (error);
@@ -317,9 +315,7 @@ gs_plugins_dummy_distro_upgrades_func (GsPluginLoader *plugin_loader)
 
 	/* trigger the update */
 	g_object_unref (plugin_job);
-	plugin_job = gs_plugin_job_newv (GS_PLUGIN_ACTION_UPGRADE_TRIGGER,
-					 "app", app,
-					 NULL);
+	plugin_job = gs_plugin_job_upgrade_trigger_new (app, GS_PLUGIN_UPGRADE_TRIGGER_FLAGS_NONE);
 	ret = gs_plugin_loader_job_action (plugin_loader, plugin_job, NULL, &error);
 	gs_test_flush_main_context ();
 	g_assert_no_error (error);
@@ -331,7 +327,7 @@ static gboolean
 filter_valid_cb (GsApp    *app,
                  gpointer  user_data)
 {
-	return gs_plugin_loader_app_is_valid (app, GS_PLUGIN_REFINE_FLAGS_NONE);
+	return gs_plugin_loader_app_is_valid (app, GS_PLUGIN_REFINE_JOB_FLAGS_NONE);
 }
 
 static void
@@ -485,10 +481,8 @@ gs_plugins_dummy_url_to_app_func (GsPluginLoader *plugin_loader)
 	g_autoptr(GsApp) app = NULL;
 	g_autoptr(GsPluginJob) plugin_job = NULL;
 
-	plugin_job = gs_plugin_job_newv (GS_PLUGIN_ACTION_URL_TO_APP,
-					 "search", "dummy://chiron.desktop",
-					 "refine-flags", GS_PLUGIN_REFINE_FLAGS_REQUIRE_ICON,
-					 NULL);
+	plugin_job = gs_plugin_job_url_to_app_new ("dummy://chiron.desktop", GS_PLUGIN_URL_TO_APP_FLAGS_NONE);
+	gs_plugin_job_set_refine_flags (plugin_job, GS_PLUGIN_REFINE_FLAGS_REQUIRE_ICON);
 	app = gs_plugin_loader_job_process_app (plugin_loader, plugin_job, NULL, &error);
 	gs_test_flush_main_context ();
 	g_assert_no_error (error);
@@ -623,9 +617,6 @@ gs_plugins_dummy_limit_parallel_ops_func (GsPluginLoader *plugin_loader)
 	g_assert_cmpint (gs_app_get_kind (app1), ==, AS_COMPONENT_KIND_OPERATING_SYSTEM);
 	g_assert_cmpint (gs_app_get_state (app1), ==, GS_APP_STATE_AVAILABLE);
 
-	/* allow only one operation at a time */
-	gs_plugin_loader_set_max_parallel_ops (plugin_loader, 1);
-
 	app2 = gs_app_new ("chiron.desktop");
 	plugin = gs_plugin_loader_find_plugin (plugin_loader, "dummy");
 	gs_app_set_management_plugin (app2, plugin);
@@ -643,9 +634,7 @@ gs_plugins_dummy_limit_parallel_ops_func (GsPluginLoader *plugin_loader)
 
 	/* download an upgrade */
 	g_object_unref (plugin_job1);
-	plugin_job1 = gs_plugin_job_newv (GS_PLUGIN_ACTION_UPGRADE_DOWNLOAD,
-					  "app", app1,
-					  NULL);
+	plugin_job1 = gs_plugin_job_upgrade_download_new (app1, GS_PLUGIN_UPGRADE_DOWNLOAD_FLAGS_NONE);
 	gs_plugin_loader_job_process_async (plugin_loader,
 					    plugin_job1,
 					    NULL,
@@ -653,9 +642,7 @@ gs_plugins_dummy_limit_parallel_ops_func (GsPluginLoader *plugin_loader)
 					    &result1);
 
 	/* install an app */
-	plugin_job2 = gs_plugin_job_newv (GS_PLUGIN_ACTION_INSTALL,
-					  "app", app2,
-					  NULL);
+	plugin_job2 = gs_plugin_job_manage_app_new (app2, GS_PLUGIN_MANAGE_APP_FLAGS_INSTALL);
 	gs_plugin_loader_job_process_async (plugin_loader,
 					    plugin_job2,
 					    NULL,
@@ -692,9 +679,6 @@ gs_plugins_dummy_limit_parallel_ops_func (GsPluginLoader *plugin_loader)
 	g_assert_cmpint (gs_app_get_state (app1), ==, GS_APP_STATE_UPDATABLE);
 	g_assert_cmpint (gs_app_get_state (app2), ==, GS_APP_STATE_INSTALLED);
 	g_assert_cmpint (gs_app_get_state (app3), ==, GS_APP_STATE_INSTALLED);
-
-	/* set the default max parallel ops */
-	gs_plugin_loader_set_max_parallel_ops (plugin_loader, 0);
 }
 
 static void

@@ -126,8 +126,9 @@ gs_plugin_dummy_setup_finish (GsPlugin      *plugin,
 	return g_task_propagate_boolean (G_TASK (result), error);
 }
 
-void
-gs_plugin_adopt_app (GsPlugin *plugin, GsApp *app)
+static void
+gs_plugin_dummy_adopt_app (GsPlugin *plugin,
+			   GsApp *app)
 {
 	if (gs_app_get_id (app) != NULL &&
 	    g_str_has_prefix (gs_app_get_id (app), "dummy:")) {
@@ -280,30 +281,45 @@ gs_plugin_dummy_poll_cb (gpointer user_data)
 	return TRUE;
 }
 
-gboolean
-gs_plugin_url_to_app (GsPlugin *plugin,
-		      GsAppList *list,
-		      const gchar *url,
-		      GCancellable *cancellable,
-		      GError **error)
+
+static void
+gs_plugin_dummy_url_to_app_async (GsPlugin              *plugin,
+                                  const gchar           *url,
+                                  GsPluginUrlToAppFlags  flags,
+                                  GCancellable          *cancellable,
+                                  GAsyncReadyCallback    callback,
+                                  gpointer               user_data)
 {
-	g_autofree gchar *path = NULL;
-	g_autofree gchar *scheme = NULL;
+	g_autoptr(GTask) task = NULL;
+	g_autoptr(GsAppList) list = gs_app_list_new ();
 	g_autoptr(GsApp) app = NULL;
+	g_autofree gchar *scheme = NULL;
 
-	/* not us */
+	task = gs_plugin_url_to_app_data_new_task (plugin, url, flags, cancellable, callback, user_data);
+	g_task_set_source_tag (task, gs_plugin_dummy_url_to_app_async);
+
+	/* it's us */
 	scheme = gs_utils_get_url_scheme (url);
-	if (g_strcmp0 (scheme, "dummy") != 0)
-		return TRUE;
+	if (g_strcmp0 (scheme, "dummy") == 0) {
+		g_autofree gchar *path = NULL;
+		/* create app */
+		path = gs_utils_get_url_path (url);
+		app = gs_app_new (path);
+		gs_app_set_management_plugin (app, plugin);
+		gs_app_set_metadata (app, "GnomeSoftware::Creator",
+				     gs_plugin_get_name (plugin));
+		gs_app_list_add (list, app);
+	}
 
-	/* create app */
-	path = gs_utils_get_url_path (url);
-	app = gs_app_new (path);
-	gs_app_set_management_plugin (app, plugin);
-	gs_app_set_metadata (app, "GnomeSoftware::Creator",
-			     gs_plugin_get_name (plugin));
-	gs_app_list_add (list, app);
-	return TRUE;
+	g_task_return_pointer (task, g_steal_pointer (&list), g_object_unref);
+}
+
+static GsAppList *
+gs_plugin_dummy_url_to_app_finish (GsPlugin      *plugin,
+                                   GAsyncResult  *result,
+                                   GError       **error)
+{
+	return g_task_propagate_pointer (G_TASK (result), error);
 }
 
 static gboolean timeout_cb (gpointer user_data);
@@ -354,126 +370,37 @@ gs_plugin_dummy_timeout_finish (GsPluginDummy  *self,
 	return g_task_propagate_boolean (G_TASK (result), error);
 }
 
-gboolean
-gs_plugin_add_updates (GsPlugin *plugin,
-		       GsAppList *list,
-		       GCancellable *cancellable,
-		       GError **error)
-{
-	GsApp *app;
-	GsApp *proxy;
-	g_autoptr(GIcon) ic = NULL;
-
-	/* update UI as this might take some time */
-	gs_plugin_status_update (plugin, NULL, GS_PLUGIN_STATUS_WAITING);
-
-	/* spin */
-	if (!gs_plugin_dummy_delay (plugin, NULL, 2000, cancellable, error))
-		return FALSE;
-
-	/* use a generic stock icon */
-	ic = g_themed_icon_new ("system-component-driver");
-
-	/* add a live updatable normal application */
-	app = gs_app_new ("chiron.desktop");
-	gs_app_set_name (app, GS_APP_QUALITY_NORMAL, "Chiron");
-	gs_app_set_summary (app, GS_APP_QUALITY_NORMAL, "A teaching application");
-	gs_app_set_update_details_text (app, "Do not crash when using libvirt.");
-	gs_app_set_update_urgency (app, AS_URGENCY_KIND_HIGH);
-	gs_app_add_icon (app, ic);
-	gs_app_set_kind (app, AS_COMPONENT_KIND_DESKTOP_APP);
-	gs_app_set_state (app, GS_APP_STATE_UPDATABLE_LIVE);
-	gs_app_set_management_plugin (app, plugin);
-	gs_app_list_add (list, app);
-	g_object_unref (app);
-
-	/* add a offline OS update */
-	app = gs_app_new (NULL);
-	gs_app_set_name (app, GS_APP_QUALITY_NORMAL, "libvirt-glib-devel");
-	gs_app_set_summary (app, GS_APP_QUALITY_NORMAL, "Development files for libvirt");
-	gs_app_set_update_details_text (app, "Fix several memory leaks.");
-	gs_app_set_update_urgency (app, AS_URGENCY_KIND_LOW);
-	gs_app_set_kind (app, AS_COMPONENT_KIND_GENERIC);
-	gs_app_set_bundle_kind (app, AS_BUNDLE_KIND_PACKAGE);
-	gs_app_set_scope (app, AS_COMPONENT_SCOPE_SYSTEM);
-	gs_app_set_state (app, GS_APP_STATE_UPDATABLE);
-	gs_app_add_source (app, "libvirt-glib-devel");
-	gs_app_add_source_id (app, "libvirt-glib-devel;0.0.1;noarch;fedora");
-	gs_app_set_management_plugin (app, plugin);
-	gs_app_list_add (list, app);
-	g_object_unref (app);
-
-	/* add a live OS update */
-	app = gs_app_new (NULL);
-	gs_app_set_name (app, GS_APP_QUALITY_NORMAL, "chiron-libs");
-	gs_app_set_summary (app, GS_APP_QUALITY_NORMAL, "library for chiron");
-	gs_app_set_update_details_text (app, "Do not crash when using libvirt.");
-	gs_app_set_update_urgency (app, AS_URGENCY_KIND_HIGH);
-	gs_app_set_kind (app, AS_COMPONENT_KIND_GENERIC);
-	gs_app_set_bundle_kind (app, AS_BUNDLE_KIND_PACKAGE);
-	gs_app_set_scope (app, AS_COMPONENT_SCOPE_SYSTEM);
-	gs_app_set_state (app, GS_APP_STATE_UPDATABLE_LIVE);
-	gs_app_add_source (app, "chiron-libs");
-	gs_app_add_source_id (app, "chiron-libs;0.0.1;i386;updates-testing");
-	gs_app_set_management_plugin (app, plugin);
-	gs_app_list_add (list, app);
-	g_object_unref (app);
-
-	/* add a proxy app update */
-	proxy = gs_app_new ("proxy.desktop");
-	gs_app_set_name (proxy, GS_APP_QUALITY_NORMAL, "Proxy");
-	gs_app_set_summary (proxy, GS_APP_QUALITY_NORMAL, "A proxy app");
-	gs_app_set_update_details_text (proxy, "Update all related apps.");
-	gs_app_set_update_urgency (proxy, AS_URGENCY_KIND_HIGH);
-	gs_app_add_icon (proxy, ic);
-	gs_app_set_kind (proxy, AS_COMPONENT_KIND_DESKTOP_APP);
-	gs_app_add_quirk (proxy, GS_APP_QUIRK_IS_PROXY);
-	gs_app_set_state (proxy, GS_APP_STATE_UPDATABLE_LIVE);
-	gs_app_set_management_plugin (proxy, plugin);
-	gs_app_list_add (list, proxy);
-	g_object_unref (proxy);
-
-	/* add a proxy related app */
-	app = gs_app_new ("proxy-related-app.desktop");
-	gs_app_set_name (app, GS_APP_QUALITY_NORMAL, "Related app");
-	gs_app_set_summary (app, GS_APP_QUALITY_NORMAL, "A related app");
-	gs_app_set_kind (app, AS_COMPONENT_KIND_DESKTOP_APP);
-	gs_app_set_state (app, GS_APP_STATE_UPDATABLE_LIVE);
-	gs_app_set_management_plugin (app, plugin);
-	gs_app_add_related (proxy, app);
-	g_object_unref (app);
-
-	/* add another proxy related app */
-	app = gs_app_new ("proxy-another-related-app.desktop");
-	gs_app_set_name (app, GS_APP_QUALITY_NORMAL, "Another Related app");
-	gs_app_set_summary (app, GS_APP_QUALITY_NORMAL, "A related app");
-	gs_app_set_kind (app, AS_COMPONENT_KIND_DESKTOP_APP);
-	gs_app_set_state (app, GS_APP_STATE_UPDATABLE_LIVE);
-	gs_app_set_management_plugin (app, plugin);
-	gs_app_add_related (proxy, app);
-	g_object_unref (app);
-
-	return TRUE;
-}
-
-gboolean
-gs_plugin_app_remove (GsPlugin *plugin,
-		      GsApp *app,
-		      GCancellable *cancellable,
-		      GError **error)
+static void
+gs_plugin_dummy_remove_app_async (GsPlugin *plugin,
+				  GsApp *app,
+				  GsPluginManageAppFlags flags,
+				  GCancellable *cancellable,
+				  GAsyncReadyCallback callback,
+				  gpointer user_data)
 {
 	GsPluginDummy *self = GS_PLUGIN_DUMMY (plugin);
+	g_autoptr(GTask) task = NULL;
+
+	task = gs_plugin_manage_app_data_new_task (plugin, app, flags, cancellable, callback, user_data);
+	g_task_set_source_tag (task, gs_plugin_dummy_remove_app_async);
 
 	/* only process this app if was created by this plugin */
-	if (!gs_app_has_management_plugin (app, plugin))
-		return TRUE;
+	if (!gs_app_has_management_plugin (app, plugin)) {
+		g_task_return_boolean (task, TRUE);
+		return;
+	}
+
+	/* is not a source */
+	g_assert (gs_app_get_kind (app) != AS_COMPONENT_KIND_REPOSITORY);
 
 	/* remove app */
 	if (g_strcmp0 (gs_app_get_id (app), "chiron.desktop") == 0) {
+		g_autoptr(GError) local_error = NULL;
 		gs_app_set_state (app, GS_APP_STATE_REMOVING);
-		if (!gs_plugin_dummy_delay (plugin, app, 500, cancellable, error)) {
+		if (!gs_plugin_dummy_delay (plugin, app, 500, cancellable, &local_error)) {
 			gs_app_set_state_recover (app);
-			return FALSE;
+			g_task_return_error (task, g_steal_pointer (&local_error));
+			return;
 		}
 		gs_app_set_state (app, GS_APP_STATE_UNKNOWN);
 	}
@@ -483,28 +410,50 @@ gs_plugin_app_remove (GsPlugin *plugin,
 	g_hash_table_insert (self->available_apps,
 			     g_strdup (gs_app_get_id (app)),
 			     GUINT_TO_POINTER (1));
-	return TRUE;
+
+	g_task_return_boolean (task, TRUE);
 }
 
-gboolean
-gs_plugin_app_install (GsPlugin *plugin,
-		       GsApp *app,
-		       GCancellable *cancellable,
-		       GError **error)
+static gboolean
+gs_plugin_dummy_remove_app_finish (GsPlugin *plugin,
+				   GAsyncResult *result,
+				   GError **error)
+{
+	return g_task_propagate_boolean (G_TASK (result), error);
+}
+
+static void
+gs_plugin_dummy_install_app_async (GsPlugin *plugin,
+				   GsApp *app,
+				   GsPluginManageAppFlags flags,
+				   GCancellable *cancellable,
+				   GAsyncReadyCallback callback,
+				   gpointer user_data)
 {
 	GsPluginDummy *self = GS_PLUGIN_DUMMY (plugin);
+	g_autoptr(GTask) task = NULL;
+
+	task = gs_plugin_manage_app_data_new_task (plugin, app, flags, cancellable, callback, user_data);
+	g_task_set_source_tag (task, gs_plugin_dummy_install_app_async);
 
 	/* only process this app if was created by this plugin */
-	if (!gs_app_has_management_plugin (app, plugin))
-		return TRUE;
+	if (!gs_app_has_management_plugin (app, plugin)) {
+		g_task_return_boolean (task, TRUE);
+		return;
+	}
+
+	/* is not a source */
+	g_assert (gs_app_get_kind (app) != AS_COMPONENT_KIND_REPOSITORY);
 
 	/* install app */
 	if (g_strcmp0 (gs_app_get_id (app), "chiron.desktop") == 0 ||
 	    g_strcmp0 (gs_app_get_id (app), "zeus.desktop") == 0) {
+		g_autoptr(GError) local_error = NULL;
 		gs_app_set_state (app, GS_APP_STATE_INSTALLING);
-		if (!gs_plugin_dummy_delay (plugin, app, 500, cancellable, error)) {
+		if (!gs_plugin_dummy_delay (plugin, app, 500, cancellable, &local_error)) {
 			gs_app_set_state_recover (app);
-			return FALSE;
+			g_task_return_error (task, g_steal_pointer (&local_error));
+			return;
 		}
 		gs_app_set_state (app, GS_APP_STATE_INSTALLED);
 	}
@@ -515,13 +464,21 @@ gs_plugin_app_install (GsPlugin *plugin,
 			     GUINT_TO_POINTER (1));
 	g_hash_table_remove (self->available_apps, gs_app_get_id (app));
 
-	return TRUE;
+	g_task_return_boolean (task, TRUE);
+}
+
+static gboolean
+gs_plugin_dummy_install_app_finish (GsPlugin *plugin,
+				    GAsyncResult *result,
+				    GError **error)
+{
+	return g_task_propagate_boolean (G_TASK (result), error);
 }
 
 static gboolean
 refine_app (GsPluginDummy        *self,
             GsApp                *app,
-            GsPluginRefineFlags   flags,
+            GsPluginRefineFlags   refine_flags,
             GCancellable         *cancellable,
             GError              **error)
 {
@@ -549,14 +506,14 @@ refine_app (GsPluginDummy        *self,
 	}
 
 	/* license */
-	if (flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_LICENSE) {
+	if ((refine_flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_LICENSE) != 0) {
 		if (g_strcmp0 (gs_app_get_id (app), "chiron.desktop") == 0 ||
 		    g_strcmp0 (gs_app_get_id (app), "zeus.desktop") == 0)
 			gs_app_set_license (app, GS_APP_QUALITY_HIGHEST, "GPL-2.0-or-later");
 	}
 
 	/* homepage */
-	if (flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_URL) {
+	if ((refine_flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_URL) != 0) {
 		if (g_strcmp0 (gs_app_get_id (app), "chiron.desktop") == 0) {
 			gs_app_set_url (app, AS_URL_KIND_HOMEPAGE,
 					"http://www.test.org/");
@@ -564,7 +521,7 @@ refine_app (GsPluginDummy        *self,
 	}
 
 	/* origin */
-	if (flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_ORIGIN) {
+	if ((refine_flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_ORIGIN) != 0) {
 		if (g_strcmp0 (gs_app_get_id (app), "zeus-spell.addon") == 0)
 			gs_app_set_origin (app, "london-east");
 	}
@@ -582,7 +539,7 @@ refine_app (GsPluginDummy        *self,
 	}
 
 	/* description */
-	if (flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_DESCRIPTION) {
+	if ((refine_flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_DESCRIPTION) != 0) {
 		if (g_strcmp0 (gs_app_get_id (app), "chiron.desktop") == 0) {
 			gs_app_set_description (app, GS_APP_QUALITY_NORMAL,
 						"long description!");
@@ -590,7 +547,7 @@ refine_app (GsPluginDummy        *self,
 	}
 
 	/* add fake review */
-	if (flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_REVIEWS) {
+	if ((refine_flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_REVIEWS) != 0) {
 		g_autoptr(AsReview) review1 = NULL;
 		g_autoptr(AsReview) review2 = NULL;
 		g_autoptr(GDateTime) dt = NULL;
@@ -620,7 +577,7 @@ refine_app (GsPluginDummy        *self,
 	}
 
 	/* add fake ratings */
-	if (flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_REVIEW_RATINGS) {
+	if ((refine_flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_REVIEW_RATINGS) != 0) {
 		g_autoptr(GArray) ratings = NULL;
 		const gint data[] = { 0, 10, 20, 30, 15, 2 };
 		ratings = g_array_sized_new (FALSE, FALSE, sizeof (gint), 6);
@@ -629,7 +586,7 @@ refine_app (GsPluginDummy        *self,
 	}
 
 	/* add a rating */
-	if (flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_RATING) {
+	if ((refine_flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_RATING) != 0) {
 		gs_app_set_rating (app, 66);
 	}
 
@@ -637,12 +594,13 @@ refine_app (GsPluginDummy        *self,
 }
 
 static void
-gs_plugin_dummy_refine_async (GsPlugin            *plugin,
-                              GsAppList           *list,
-                              GsPluginRefineFlags  flags,
-                              GCancellable        *cancellable,
-                              GAsyncReadyCallback  callback,
-                              gpointer             user_data)
+gs_plugin_dummy_refine_async (GsPlugin               *plugin,
+                              GsAppList              *list,
+                              GsPluginRefineJobFlags  job_flags,
+                              GsPluginRefineFlags     refine_flags,
+                              GCancellable           *cancellable,
+                              GAsyncReadyCallback     callback,
+                              gpointer                user_data)
 {
 	GsPluginDummy *self = GS_PLUGIN_DUMMY (plugin);
 	g_autoptr(GTask) task = NULL;
@@ -654,7 +612,7 @@ gs_plugin_dummy_refine_async (GsPlugin            *plugin,
 	for (guint i = 0; i < gs_app_list_length (list); i++) {
 		GsApp *app = gs_app_list_index (list, i);
 
-		if (!refine_app (self, app, flags, cancellable, &local_error)) {
+		if (!refine_app (self, app, refine_flags, cancellable, &local_error)) {
 			g_task_return_error (task, g_steal_pointer (&local_error));
 			return;
 		}
@@ -691,10 +649,11 @@ gs_plugin_dummy_list_apps_async (GsPlugin              *plugin,
 	guint max_results = 0;
 	GsCategory *category = NULL;
 	GsAppQueryTristate is_installed = GS_APP_QUERY_TRISTATE_UNSET;
+	GsAppQueryTristate is_for_update = GS_APP_QUERY_TRISTATE_UNSET;
 	const gchar * const *keywords = NULL;
 	GsApp *alternate_of = NULL;
 
-	task = g_task_new (plugin, cancellable, callback, user_data);
+	task = gs_plugin_list_apps_data_new_task (plugin, query, flags, cancellable, callback, user_data);
 	g_task_set_source_tag (task, gs_plugin_dummy_list_apps_async);
 
 	if (query != NULL) {
@@ -705,6 +664,7 @@ gs_plugin_dummy_list_apps_async (GsPlugin              *plugin,
 		is_installed = gs_app_query_get_is_installed (query);
 		keywords = gs_app_query_get_keywords (query);
 		alternate_of = gs_app_query_get_alternate_of (query);
+		is_for_update = gs_app_query_get_is_for_update (query);
 	}
 
 	/* Currently only support a subset of query properties, and only one set at once.
@@ -714,9 +674,11 @@ gs_plugin_dummy_list_apps_async (GsPlugin              *plugin,
 	     category == NULL &&
 	     is_installed == GS_APP_QUERY_TRISTATE_UNSET &&
 	     keywords == NULL &&
-	     alternate_of == NULL) ||
+	     alternate_of == NULL &&
+	     is_for_update == GS_APP_QUERY_TRISTATE_UNSET) ||
 	    is_curated == GS_APP_QUERY_TRISTATE_FALSE ||
 	    is_installed == GS_APP_QUERY_TRISTATE_FALSE ||
+	    is_for_update == GS_APP_QUERY_TRISTATE_FALSE ||
 	    gs_app_query_get_n_properties_set (query) != 1) {
 		g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
 					 "Unsupported query");
@@ -851,7 +813,116 @@ gs_plugin_dummy_list_apps_async (GsPlugin              *plugin,
 		}
 	}
 
+	if (is_for_update == GS_APP_QUERY_TRISTATE_TRUE) {
+		/* update UI as this might take some time */
+		gs_plugin_status_update (plugin, NULL, GS_PLUGIN_STATUS_WAITING);
+
+		/* spin */
+		gs_plugin_dummy_timeout_async (self, 2000, cancellable,
+					       list_apps_timeout_cb, g_steal_pointer (&task));
+		return;
+	}
+
 	g_task_return_pointer (task, g_steal_pointer (&list), (GDestroyNotify) g_object_unref);
+}
+
+static GsAppList *
+list_apps_finish (GsPluginDummy *self,
+		  GTask *task)
+{
+	GsPluginListAppsData *data = g_task_get_task_data (task);
+	g_autoptr(GsAppList) list = gs_app_list_new ();
+
+	if (data->query && gs_app_query_get_is_for_update (data->query) == GS_APP_QUERY_TRISTATE_TRUE) {
+		GsPlugin *plugin = GS_PLUGIN (self);
+		GsApp *app;
+		GsApp *proxy;
+		g_autoptr(GIcon) ic = NULL;
+
+		/* use a generic stock icon */
+		ic = g_themed_icon_new ("system-component-driver");
+
+		/* add a live updatable normal application */
+		app = gs_app_new ("chiron.desktop");
+		gs_app_set_name (app, GS_APP_QUALITY_NORMAL, "Chiron");
+		gs_app_set_summary (app, GS_APP_QUALITY_NORMAL, "A teaching application");
+		gs_app_set_update_details_text (app, "Do not crash when using libvirt.");
+		gs_app_set_update_urgency (app, AS_URGENCY_KIND_HIGH);
+		gs_app_add_icon (app, ic);
+		gs_app_set_kind (app, AS_COMPONENT_KIND_DESKTOP_APP);
+		gs_app_set_state (app, GS_APP_STATE_UPDATABLE_LIVE);
+		gs_app_set_management_plugin (app, plugin);
+		gs_app_list_add (list, app);
+		g_object_unref (app);
+
+		/* add a offline OS update */
+		app = gs_app_new (NULL);
+		gs_app_set_name (app, GS_APP_QUALITY_NORMAL, "libvirt-glib-devel");
+		gs_app_set_summary (app, GS_APP_QUALITY_NORMAL, "Development files for libvirt");
+		gs_app_set_update_details_text (app, "Fix several memory leaks.");
+		gs_app_set_update_urgency (app, AS_URGENCY_KIND_LOW);
+		gs_app_set_kind (app, AS_COMPONENT_KIND_GENERIC);
+		gs_app_set_bundle_kind (app, AS_BUNDLE_KIND_PACKAGE);
+		gs_app_set_scope (app, AS_COMPONENT_SCOPE_SYSTEM);
+		gs_app_set_state (app, GS_APP_STATE_UPDATABLE);
+		gs_app_add_source (app, "libvirt-glib-devel");
+		gs_app_add_source_id (app, "libvirt-glib-devel;0.0.1;noarch;fedora");
+		gs_app_set_management_plugin (app, plugin);
+		gs_app_list_add (list, app);
+		g_object_unref (app);
+
+		/* add a live OS update */
+		app = gs_app_new (NULL);
+		gs_app_set_name (app, GS_APP_QUALITY_NORMAL, "chiron-libs");
+		gs_app_set_summary (app, GS_APP_QUALITY_NORMAL, "library for chiron");
+		gs_app_set_update_details_text (app, "Do not crash when using libvirt.");
+		gs_app_set_update_urgency (app, AS_URGENCY_KIND_HIGH);
+		gs_app_set_kind (app, AS_COMPONENT_KIND_GENERIC);
+		gs_app_set_bundle_kind (app, AS_BUNDLE_KIND_PACKAGE);
+		gs_app_set_scope (app, AS_COMPONENT_SCOPE_SYSTEM);
+		gs_app_set_state (app, GS_APP_STATE_UPDATABLE_LIVE);
+		gs_app_add_source (app, "chiron-libs");
+		gs_app_add_source_id (app, "chiron-libs;0.0.1;i386;updates-testing");
+		gs_app_set_management_plugin (app, plugin);
+		gs_app_list_add (list, app);
+		g_object_unref (app);
+
+		/* add a proxy app update */
+		proxy = gs_app_new ("proxy.desktop");
+		gs_app_set_name (proxy, GS_APP_QUALITY_NORMAL, "Proxy");
+		gs_app_set_summary (proxy, GS_APP_QUALITY_NORMAL, "A proxy app");
+		gs_app_set_update_details_text (proxy, "Update all related apps.");
+		gs_app_set_update_urgency (proxy, AS_URGENCY_KIND_HIGH);
+		gs_app_add_icon (proxy, ic);
+		gs_app_set_kind (proxy, AS_COMPONENT_KIND_DESKTOP_APP);
+		gs_app_add_quirk (proxy, GS_APP_QUIRK_IS_PROXY);
+		gs_app_set_state (proxy, GS_APP_STATE_UPDATABLE_LIVE);
+		gs_app_set_management_plugin (proxy, plugin);
+		gs_app_list_add (list, proxy);
+		g_object_unref (proxy);
+
+		/* add a proxy related app */
+		app = gs_app_new ("proxy-related-app.desktop");
+		gs_app_set_name (app, GS_APP_QUALITY_NORMAL, "Related app");
+		gs_app_set_summary (app, GS_APP_QUALITY_NORMAL, "A related app");
+		gs_app_set_kind (app, AS_COMPONENT_KIND_DESKTOP_APP);
+		gs_app_set_state (app, GS_APP_STATE_UPDATABLE_LIVE);
+		gs_app_set_management_plugin (app, plugin);
+		gs_app_add_related (proxy, app);
+		g_object_unref (app);
+
+		/* add another proxy related app */
+		app = gs_app_new ("proxy-another-related-app.desktop");
+		gs_app_set_name (app, GS_APP_QUALITY_NORMAL, "Another Related app");
+		gs_app_set_summary (app, GS_APP_QUALITY_NORMAL, "A related app");
+		gs_app_set_kind (app, AS_COMPONENT_KIND_DESKTOP_APP);
+		gs_app_set_state (app, GS_APP_STATE_UPDATABLE_LIVE);
+		gs_app_set_management_plugin (app, plugin);
+		gs_app_add_related (proxy, app);
+		g_object_unref (app);
+	}
+
+	return g_steal_pointer (&list);
 }
 
 static void
@@ -865,7 +936,7 @@ list_apps_timeout_cb (GObject      *object,
 
 	/* Return a cancelled error, or an empty app list after hanging. */
 	if (gs_plugin_dummy_timeout_finish (self, result, &local_error))
-		g_task_return_pointer (task, gs_app_list_new (), (GDestroyNotify) g_object_unref);
+		g_task_return_pointer (task, list_apps_finish (self, task), (GDestroyNotify) g_object_unref);
 	else
 		g_task_return_error (task, g_steal_pointer (&local_error));
 }
@@ -1106,41 +1177,111 @@ gs_plugin_dummy_refresh_metadata_finish (GsPlugin      *plugin,
 	return g_task_propagate_boolean (G_TASK (result), error);
 }
 
-gboolean
-gs_plugin_app_upgrade_download (GsPlugin *plugin, GsApp *app,
-			        GCancellable *cancellable, GError **error)
+static void
+upgrade_download_cb (GObject      *source_object,
+                     GAsyncResult *result,
+                     gpointer      user_data)
 {
+	GsPlugin *plugin = GS_PLUGIN (source_object);
+	g_autoptr(GTask) task = g_steal_pointer (&user_data);
+	g_autoptr(GError) local_error = NULL;
+	GsPluginUpgradeDownloadData *data = g_task_get_task_data (task);
+
+	if (!gs_plugin_dummy_delay_finish (plugin, result, &local_error)) {
+		gs_app_set_state_recover (data->app);
+		g_task_return_error (task, g_steal_pointer (&local_error));
+	} else {
+		gs_app_set_state (data->app, GS_APP_STATE_UPDATABLE);
+		g_task_return_boolean (task, TRUE);
+	}
+}
+
+static void
+gs_plugin_dummy_upgrade_download_async (GsPlugin                    *plugin,
+					GsApp                       *app,
+					GsPluginUpgradeDownloadFlags flags,
+					GCancellable                *cancellable,
+					GAsyncReadyCallback          callback,
+					gpointer                     user_data)
+{
+	g_autoptr(GTask) task = NULL;
+
+	task = gs_plugin_upgrade_download_data_new_task (plugin, app, flags, cancellable, callback, user_data);
+	g_task_set_source_tag (task, gs_plugin_dummy_upgrade_download_async);
+
 	/* only process this app if was created by this plugin */
-	if (!gs_app_has_management_plugin (app, plugin))
-		return TRUE;
+	if (!gs_app_has_management_plugin (app, plugin)) {
+		g_task_return_boolean (task, TRUE);
+		return;
+	}
 
 	g_debug ("starting download");
 	gs_app_set_state (app, GS_APP_STATE_DOWNLOADING);
-	if (!gs_plugin_dummy_delay (plugin, app, 5000, cancellable, error)) {
-		gs_app_set_state_recover (app);
-		return FALSE;
-	}
-	gs_app_set_state (app, GS_APP_STATE_UPDATABLE);
-	return TRUE;
+	gs_plugin_dummy_delay_async (plugin, app, 5000, cancellable, upgrade_download_cb, g_steal_pointer (&task));
 }
 
-gboolean
-gs_plugin_app_upgrade_trigger (GsPlugin *plugin, GsApp *app,
-			       GCancellable *cancellable, GError **error)
+static gboolean
+gs_plugin_dummy_upgrade_download_finish (GsPlugin      *plugin,
+					 GAsyncResult  *result,
+					 GError       **error)
 {
+	return g_task_propagate_boolean (G_TASK (result), error);
+}
+
+static void
+gs_plugin_dummy_upgrade_trigger_async (GsPlugin                   *plugin,
+				       GsApp                      *app,
+				       GsPluginUpgradeTriggerFlags flags,
+				       GCancellable               *cancellable,
+				       GAsyncReadyCallback         callback,
+				       gpointer                    user_data)
+{
+	g_autoptr(GTask) task = NULL;
+
+	task = gs_plugin_upgrade_trigger_data_new_task (plugin, app, flags, cancellable, callback, user_data);
+	g_task_set_source_tag (task, gs_plugin_dummy_upgrade_trigger_async);
+
 	/* only process this app if was created by this plugin */
-	if (!gs_app_has_management_plugin (app, plugin))
-		return TRUE;
+	if (!gs_app_has_management_plugin (app, plugin)) {
+		g_task_return_boolean (task, TRUE);
+		return;
+	}
 
 	/* NOP */
-	return TRUE;
+	g_task_return_boolean (task, TRUE);
 }
 
-gboolean
-gs_plugin_update_cancel (GsPlugin *plugin, GsApp *app,
-			 GCancellable *cancellable, GError **error)
+static gboolean
+gs_plugin_dummy_upgrade_trigger_finish (GsPlugin      *plugin,
+					GAsyncResult  *result,
+					GError       **error)
 {
-	return TRUE;
+	return g_task_propagate_boolean (G_TASK (result), error);
+}
+
+static void
+gs_plugin_dummy_update_cancel_async (GsPlugin                 *plugin,
+                                     GsApp                    *app,
+                                     GsPluginUpdateCancelFlags flags,
+                                     GCancellable             *cancellable,
+                                     GAsyncReadyCallback      callback,
+                                     gpointer                 user_data)
+{
+	g_autoptr(GTask) task = NULL;
+
+	task = gs_plugin_update_cancel_data_new_task (plugin, app, flags, cancellable, callback, user_data);
+	g_task_set_source_tag (task, gs_plugin_dummy_update_cancel_async);
+
+	/* success */
+	g_task_return_boolean (task, TRUE);
+}
+
+static gboolean
+gs_plugin_dummy_update_cancel_finish (GsPlugin      *plugin,
+				      GAsyncResult  *result,
+                                      GError       **error)
+{
+	return g_task_propagate_boolean (G_TASK (result), error);
 }
 
 static void
@@ -1151,6 +1292,7 @@ gs_plugin_dummy_class_init (GsPluginDummyClass *klass)
 
 	object_class->dispose = gs_plugin_dummy_dispose;
 
+	plugin_class->adopt_app = gs_plugin_dummy_adopt_app;
 	plugin_class->setup_async = gs_plugin_dummy_setup_async;
 	plugin_class->setup_finish = gs_plugin_dummy_setup_finish;
 	plugin_class->refine_async = gs_plugin_dummy_refine_async;
@@ -1163,6 +1305,18 @@ gs_plugin_dummy_class_init (GsPluginDummyClass *klass)
 	plugin_class->list_distro_upgrades_finish = gs_plugin_dummy_list_distro_upgrades_finish;
 	plugin_class->update_apps_async = gs_plugin_dummy_update_apps_async;
 	plugin_class->update_apps_finish = gs_plugin_dummy_update_apps_finish;
+	plugin_class->install_app_async = gs_plugin_dummy_install_app_async;
+	plugin_class->install_app_finish = gs_plugin_dummy_install_app_finish;
+	plugin_class->remove_app_async = gs_plugin_dummy_remove_app_async;
+	plugin_class->remove_app_finish = gs_plugin_dummy_remove_app_finish;
+	plugin_class->update_cancel_async = gs_plugin_dummy_update_cancel_async;
+	plugin_class->update_cancel_finish = gs_plugin_dummy_update_cancel_finish;
+	plugin_class->upgrade_download_async = gs_plugin_dummy_upgrade_download_async;
+	plugin_class->upgrade_download_finish = gs_plugin_dummy_upgrade_download_finish;
+	plugin_class->upgrade_trigger_async = gs_plugin_dummy_upgrade_trigger_async;
+	plugin_class->upgrade_trigger_finish = gs_plugin_dummy_upgrade_trigger_finish;
+	plugin_class->url_to_app_async = gs_plugin_dummy_url_to_app_async;
+	plugin_class->url_to_app_finish = gs_plugin_dummy_url_to_app_finish;
 }
 
 GType

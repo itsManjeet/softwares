@@ -98,8 +98,6 @@ GsOdrsProvider	*gs_plugin_loader_get_odrs_provider	(GsPluginLoader	*plugin_loade
 void		 gs_plugin_loader_clear_caches		(GsPluginLoader	*plugin_loader);
 GsPlugin	*gs_plugin_loader_find_plugin		(GsPluginLoader	*plugin_loader,
 							 const gchar	*plugin_name);
-void            gs_plugin_loader_set_max_parallel_ops  (GsPluginLoader *plugin_loader,
-                                                        guint           max_ops);
 
 GsJobManager	*gs_plugin_loader_get_job_manager	(GsPluginLoader	*plugin_loader);
 
@@ -116,7 +114,7 @@ void		 gs_plugin_loader_claim_job_error	(GsPluginLoader *plugin_loader,
 							 const GError *error);
 
 gboolean	 gs_plugin_loader_app_is_valid		(GsApp *app,
-							 GsPluginRefineFlags flags);
+							 GsPluginRefineJobFlags job_flags);
 gboolean	 gs_plugin_loader_app_is_compatible	(GsPluginLoader *plugin_loader,
 							 GsApp *app);
 

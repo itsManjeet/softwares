@@ -818,8 +818,7 @@ gs_extras_page_load (GsExtrasPage *self, GPtrArray *array_search_data)
 		               GS_PLUGIN_REFINE_FLAGS_REQUIRE_SETUP_ACTION |
 		               GS_PLUGIN_REFINE_FLAGS_REQUIRE_DESCRIPTION |
 		               GS_PLUGIN_REFINE_FLAGS_REQUIRE_LICENSE |
-		               GS_PLUGIN_REFINE_FLAGS_REQUIRE_RATING |
-		               GS_PLUGIN_REFINE_FLAGS_ALLOW_PACKAGES;
+		               GS_PLUGIN_REFINE_FLAGS_REQUIRE_RATING;
 
 		search_data = g_ptr_array_index (self->array_search_data, i);
 		if (search_data->search_filename != NULL) {
@@ -828,6 +827,7 @@ gs_extras_page_load (GsExtrasPage *self, GPtrArray *array_search_data)
 			const gchar *provides_files[2] = { search_data->search_filename, NULL };
 
 			query = gs_app_query_new ("provides-files", provides_files,
+						  "refine-job_flags", GS_PLUGIN_REFINE_JOB_FLAGS_ALLOW_PACKAGES,
 						  "refine-flags", refine_flags,
 						  "license-type", gs_page_get_query_license_type (GS_PAGE (self)),
 						  "developer-verified-type", gs_page_get_query_developer_verified_type (GS_PAGE (self)),
@@ -846,10 +846,8 @@ gs_extras_page_load (GsExtrasPage *self, GPtrArray *array_search_data)
 			g_autoptr (GFile) file = NULL;
 			g_autoptr(GsPluginJob) plugin_job = NULL;
 			file = g_file_new_for_path (search_data->package_filename);
-			plugin_job = gs_plugin_job_newv (GS_PLUGIN_ACTION_FILE_TO_APP,
-							 "file", file,
-							 "refine-flags", refine_flags,
-							 NULL);
+			plugin_job = gs_plugin_job_file_to_app_new (file, GS_PLUGIN_FILE_TO_APP_FLAGS_NONE);
+			gs_plugin_job_set_refine_flags (plugin_job, refine_flags);
 			g_debug ("resolving filename to app: '%s'", search_data->package_filename);
 			gs_plugin_loader_job_process_async (self->plugin_loader, plugin_job,
 							    self->search_cancellable,

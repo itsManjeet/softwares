@@ -909,23 +909,62 @@ gs_plugin_appstream_shutdown_finish (GsPlugin      *plugin,
 	return g_task_propagate_boolean (G_TASK (result), error);
 }
 
-gboolean
-gs_plugin_url_to_app (GsPlugin *plugin,
-		      GsAppList *list,
-		      const gchar *url,
-		      GCancellable *cancellable,
-		      GError **error)
+/* Run in @worker. */
+static void
+url_to_app_thread_cb (GTask *task,
+		      gpointer source_object,
+		      gpointer task_data,
+		      GCancellable *cancellable)
 {
-	GsPluginAppstream *self = GS_PLUGIN_APPSTREAM (plugin);
+	GsPluginAppstream *self = GS_PLUGIN_APPSTREAM (source_object);
+	GsPluginUrlToAppData *data = task_data;
+	g_autoptr(GsAppList) list = NULL;
 	g_autoptr(GRWLockReaderLocker) locker = NULL;
+	g_autoptr(GError) local_error = NULL;
+
+	assert_in_worker (self);
 
 	/* check silo is valid */
-	if (!gs_plugin_appstream_check_silo (self, cancellable, error))
-		return FALSE;
+	if (!gs_plugin_appstream_check_silo (self, cancellable, &local_error)) {
+		g_task_return_error (task, g_steal_pointer (&local_error));
+		return;
+	}
 
 	locker = g_rw_lock_reader_locker_new (&self->silo_lock);
+	list = gs_app_list_new ();
 
-	return gs_appstream_url_to_app (plugin, self->silo, list, url, cancellable, error);
+	if (gs_appstream_url_to_app (GS_PLUGIN (self), self->silo, list, data->url, cancellable, &local_error))
+		g_task_return_pointer (task, g_steal_pointer (&list), g_object_unref);
+	else
+		g_task_return_error (task, g_steal_pointer (&local_error));
+}
+
+static void
+gs_plugin_appstream_url_to_app_async (GsPlugin              *plugin,
+                                      const gchar           *url,
+                                      GsPluginUrlToAppFlags  flags,
+                                      GCancellable          *cancellable,
+                                      GAsyncReadyCallback    callback,
+                                      gpointer               user_data)
+{
+	GsPluginAppstream *self = GS_PLUGIN_APPSTREAM (plugin);
+	g_autoptr(GTask) task = NULL;
+	gboolean interactive = (flags & GS_PLUGIN_URL_TO_APP_FLAGS_INTERACTIVE) != 0;
+
+	task = gs_plugin_url_to_app_data_new_task (plugin, url, flags, cancellable, callback, user_data);
+	g_task_set_source_tag (task, gs_plugin_appstream_url_to_app_async);
+
+	/* Queue a job for the refine. */
+	gs_worker_thread_queue (self->worker, get_priority_for_interactivity (interactive),
+				url_to_app_thread_cb, g_steal_pointer (&task));
+}
+
+static GsAppList *
+gs_plugin_appstream_url_to_app_finish (GsPlugin      *plugin,
+                                       GAsyncResult  *result,
+                                       GError       **error)
+{
+	return g_task_propagate_pointer (G_TASK (result), error);
 }
 
 static void
@@ -1097,18 +1136,19 @@ static void refine_thread_cb (GTask        *task,
                               GCancellable *cancellable);
 
 static void
-gs_plugin_appstream_refine_async (GsPlugin            *plugin,
-                                  GsAppList           *list,
-                                  GsPluginRefineFlags  flags,
-                                  GCancellable        *cancellable,
-                                  GAsyncReadyCallback  callback,
-                                  gpointer             user_data)
+gs_plugin_appstream_refine_async (GsPlugin               *plugin,
+                                  GsAppList              *list,
+                                  GsPluginRefineJobFlags  job_flags,
+                                  GsPluginRefineFlags     refine_flags,
+                                  GCancellable           *cancellable,
+                                  GAsyncReadyCallback     callback,
+                                  gpointer                user_data)
 {
 	GsPluginAppstream *self = GS_PLUGIN_APPSTREAM (plugin);
 	g_autoptr(GTask) task = NULL;
-	gboolean interactive = gs_plugin_has_flags (GS_PLUGIN (self), GS_PLUGIN_FLAGS_INTERACTIVE);
+	gboolean interactive = (job_flags & GS_PLUGIN_REFINE_JOB_FLAGS_INTERACTIVE) != 0;
 
-	task = gs_plugin_refine_data_new_task (plugin, list, flags, cancellable, callback, user_data);
+	task = gs_plugin_refine_data_new_task (plugin, list, job_flags, refine_flags, cancellable, callback, user_data);
 	g_task_set_source_tag (task, gs_plugin_appstream_refine_async);
 
 	/* Queue a job for the refine. */
@@ -1134,7 +1174,7 @@ refine_thread_cb (GTask        *task,
 	GsPluginAppstream *self = GS_PLUGIN_APPSTREAM (source_object);
 	GsPluginRefineData *data = task_data;
 	GsAppList *list = data->list;
-	GsPluginRefineFlags flags = data->flags;
+	GsPluginRefineFlags refine_flags = data->refine_flags;
 	gboolean found = FALSE;
 	g_autoptr(GsAppList) app_list = NULL;
 	g_autoptr(GHashTable) apps_by_id = NULL;
@@ -1227,12 +1267,12 @@ refine_thread_cb (GTask        *task,
 			continue;
 
 		/* find by ID then fall back to package name */
-		if (!gs_plugin_refine_from_id (self, app, flags, apps_by_id, apps_by_origin_and_id, &found, &local_error)) {
+		if (!gs_plugin_refine_from_id (self, app, refine_flags, apps_by_id, apps_by_origin_and_id, &found, &local_error)) {
 			g_task_return_error (task, g_steal_pointer (&local_error));
 			return;
 		}
 		if (!found) {
-			if (!gs_plugin_refine_from_pkgname (self, app, flags, &local_error)) {
+			if (!gs_plugin_refine_from_pkgname (self, app, refine_flags, &local_error)) {
 				g_task_return_error (task, g_steal_pointer (&local_error));
 				return;
 			}
@@ -1251,7 +1291,7 @@ refine_thread_cb (GTask        *task,
 		GsApp *app = gs_app_list_index (app_list, j);
 
 		if (gs_app_has_quirk (app, GS_APP_QUIRK_IS_WILDCARD) &&
-		    !refine_wildcard (self, app, list, flags, apps_by_id, cancellable, &local_error)) {
+		    !refine_wildcard (self, app, list, refine_flags, apps_by_id, cancellable, &local_error)) {
 			g_task_return_error (task, g_steal_pointer (&local_error));
 			return;
 		}
@@ -1628,6 +1668,8 @@ gs_plugin_appstream_class_init (GsPluginAppstreamClass *klass)
 	plugin_class->refresh_metadata_finish = gs_plugin_appstream_refresh_metadata_finish;
 	plugin_class->refine_categories_async = gs_plugin_appstream_refine_categories_async;
 	plugin_class->refine_categories_finish = gs_plugin_appstream_refine_categories_finish;
+	plugin_class->url_to_app_async = gs_plugin_appstream_url_to_app_async;
+	plugin_class->url_to_app_finish = gs_plugin_appstream_url_to_app_finish;
 }
 
 GType

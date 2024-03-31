@@ -38,18 +38,6 @@ typedef enum {
 } GsPluginStatus;
 
 /**
- * GsPluginFlags:
- * @GS_PLUGIN_FLAGS_NONE:		No flags set
- * @GS_PLUGIN_FLAGS_INTERACTIVE:	User initiated the job
- *
- * The flags for the plugin at this point in time.
- **/
-typedef enum {
-	GS_PLUGIN_FLAGS_NONE = 0,
-	GS_PLUGIN_FLAGS_INTERACTIVE = 1 << 4,
-} GsPluginFlags;
-
-/**
  * GsPluginError:
  * @GS_PLUGIN_ERROR_FAILED:			Generic failure
  * @GS_PLUGIN_ERROR_NOT_SUPPORTED:		Action not supported
@@ -93,6 +81,26 @@ typedef enum {
 } GsPluginError;
 
 /**
+ * GsPluginRefineJobFlags:
+ * @GS_PLUGIN_REFINE_JOB_FLAGS_NONE:			No explicit flags set
+ * @GS_PLUGIN_REFINE_JOB_FLAGS_INTERACTIVE		= 1 << 0,
+ * @GS_PLUGIN_REFINE_JOB_FLAGS_ALLOW_PACKAGES:		Allow packages to be returned
+ * @GS_PLUGIN_REFINE_JOB_FLAGS_DISABLE_FILTERING:	Normally the results of a refine are
+ * 	filtered to remove non-valid apps; if this flag is set, that won’t happen.
+ * 	This is intended to be used by internal #GsPluginLoader code.
+ *
+ * Refine flags influencing how the job should behave. See #GsPluginRefineFlags.
+ *
+ * Since: 47
+ **/
+typedef enum {
+	GS_PLUGIN_REFINE_JOB_FLAGS_NONE			= 0,
+	GS_PLUGIN_REFINE_JOB_FLAGS_INTERACTIVE		= 1 << 0,
+	GS_PLUGIN_REFINE_JOB_FLAGS_ALLOW_PACKAGES	= 1 << 1,
+	GS_PLUGIN_REFINE_JOB_FLAGS_DISABLE_FILTERING	= 1 << 2,
+} GsPluginRefineJobFlags;
+
+/**
  * GsPluginRefineFlags:
  * @GS_PLUGIN_REFINE_FLAGS_NONE:			No explicit flags set
  * @GS_PLUGIN_REFINE_FLAGS_REQUIRE_ID:			Require the app’s ID; this is the minimum possible requirement
@@ -108,15 +116,11 @@ typedef enum {
  * @GS_PLUGIN_REFINE_FLAGS_REQUIRE_ORIGIN:		Require the origin
  * @GS_PLUGIN_REFINE_FLAGS_REQUIRE_RELATED:		Require related packages
  * @GS_PLUGIN_REFINE_FLAGS_REQUIRE_ADDONS:		Require available addons
- * @GS_PLUGIN_REFINE_FLAGS_ALLOW_PACKAGES:		Allow packages to be returned
  * @GS_PLUGIN_REFINE_FLAGS_REQUIRE_UPDATE_SEVERITY:	Require update severity
  * @GS_PLUGIN_REFINE_FLAGS_REQUIRE_UPGRADE_REMOVED:	Require distro upgrades
  * @GS_PLUGIN_REFINE_FLAGS_REQUIRE_PROVENANCE:		Require the provenance
  * @GS_PLUGIN_REFINE_FLAGS_REQUIRE_REVIEWS:		Require user-reviews
  * @GS_PLUGIN_REFINE_FLAGS_REQUIRE_REVIEW_RATINGS:	Require user-ratings
- * @GS_PLUGIN_REFINE_FLAGS_DISABLE_FILTERING:		Normally the results of a refine are
- * 	filtered to remove non-valid apps; if this flag is set, that won’t happen.
- * 	This is intended to be used by internal #GsPluginLoader code. (Since: 42)
  * @GS_PLUGIN_REFINE_FLAGS_REQUIRE_ICON:		Require the icon to be loaded
  * @GS_PLUGIN_REFINE_FLAGS_REQUIRE_PERMISSIONS:		Require the needed permissions
  * @GS_PLUGIN_REFINE_FLAGS_REQUIRE_ORIGIN_HOSTNAME:	Require the origin hostname
@@ -127,11 +131,10 @@ typedef enum {
  * @GS_PLUGIN_REFINE_FLAGS_REQUIRE_PROJECT_GROUP:	Require project group
  * @GS_PLUGIN_REFINE_FLAGS_REQUIRE_DEVELOPER_NAME:	Require developer name
  * @GS_PLUGIN_REFINE_FLAGS_REQUIRE_KUDOS:		Require kudos
- * @GS_PLUGIN_REFINE_FLAGS_REQUIRE_CONTENT_RATING:	Require content rating
  * @GS_PLUGIN_REFINE_FLAGS_REQUIRE_SIZE_DATA:		Require user and cache data sizes (Since: 41)
  * @GS_PLUGIN_REFINE_FLAGS_MASK:			All flags (Since: 40)
  *
- * The refine flags.
+ * The refine flags for what to set on a #GsApp. See #GsPluginRefineJobFlags.
  **/
 typedef enum {
 	GS_PLUGIN_REFINE_FLAGS_NONE			= 0,
@@ -149,24 +152,21 @@ typedef enum {
 	GS_PLUGIN_REFINE_FLAGS_REQUIRE_RELATED		= 1 << 11,
 	GS_PLUGIN_REFINE_FLAGS_REQUIRE_SIZE_DATA	= 1 << 12,
 	GS_PLUGIN_REFINE_FLAGS_REQUIRE_ADDONS		= 1 << 13,
-	GS_PLUGIN_REFINE_FLAGS_ALLOW_PACKAGES		= 1 << 14, /* TODO: move to request */
-	GS_PLUGIN_REFINE_FLAGS_REQUIRE_UPDATE_SEVERITY	= 1 << 15,
-	GS_PLUGIN_REFINE_FLAGS_REQUIRE_UPGRADE_REMOVED	= 1 << 16,
-	GS_PLUGIN_REFINE_FLAGS_REQUIRE_PROVENANCE	= 1 << 17,
-	GS_PLUGIN_REFINE_FLAGS_REQUIRE_REVIEWS		= 1 << 18,
-	GS_PLUGIN_REFINE_FLAGS_REQUIRE_REVIEW_RATINGS	= 1 << 19,
-	GS_PLUGIN_REFINE_FLAGS_DISABLE_FILTERING	= 1 << 20,
-	GS_PLUGIN_REFINE_FLAGS_REQUIRE_ICON		= 1 << 21,
-	GS_PLUGIN_REFINE_FLAGS_REQUIRE_PERMISSIONS	= 1 << 22,
-	GS_PLUGIN_REFINE_FLAGS_REQUIRE_ORIGIN_HOSTNAME	= 1 << 23,
-	GS_PLUGIN_REFINE_FLAGS_REQUIRE_ORIGIN_UI	= 1 << 24,
-	GS_PLUGIN_REFINE_FLAGS_REQUIRE_RUNTIME		= 1 << 25,
-	GS_PLUGIN_REFINE_FLAGS_REQUIRE_SCREENSHOTS	= 1 << 26,
-	GS_PLUGIN_REFINE_FLAGS_REQUIRE_CATEGORIES	= 1 << 27,
-	GS_PLUGIN_REFINE_FLAGS_REQUIRE_PROJECT_GROUP	= 1 << 28,
-	GS_PLUGIN_REFINE_FLAGS_REQUIRE_DEVELOPER_NAME	= 1 << 29,
-	GS_PLUGIN_REFINE_FLAGS_REQUIRE_KUDOS		= 1 << 30,
-	GS_PLUGIN_REFINE_FLAGS_REQUIRE_CONTENT_RATING	= 1 << 31,
+	GS_PLUGIN_REFINE_FLAGS_REQUIRE_UPDATE_SEVERITY	= 1 << 14,
+	GS_PLUGIN_REFINE_FLAGS_REQUIRE_UPGRADE_REMOVED	= 1 << 15,
+	GS_PLUGIN_REFINE_FLAGS_REQUIRE_PROVENANCE	= 1 << 16,
+	GS_PLUGIN_REFINE_FLAGS_REQUIRE_REVIEWS		= 1 << 17,
+	GS_PLUGIN_REFINE_FLAGS_REQUIRE_REVIEW_RATINGS	= 1 << 18,
+	GS_PLUGIN_REFINE_FLAGS_REQUIRE_ICON		= 1 << 19,
+	GS_PLUGIN_REFINE_FLAGS_REQUIRE_PERMISSIONS	= 1 << 20,
+	GS_PLUGIN_REFINE_FLAGS_REQUIRE_ORIGIN_HOSTNAME	= 1 << 21,
+	GS_PLUGIN_REFINE_FLAGS_REQUIRE_ORIGIN_UI	= 1 << 22,
+	GS_PLUGIN_REFINE_FLAGS_REQUIRE_RUNTIME		= 1 << 23,
+	GS_PLUGIN_REFINE_FLAGS_REQUIRE_SCREENSHOTS	= 1 << 24,
+	GS_PLUGIN_REFINE_FLAGS_REQUIRE_CATEGORIES	= 1 << 25,
+	GS_PLUGIN_REFINE_FLAGS_REQUIRE_PROJECT_GROUP	= 1 << 26,
+	GS_PLUGIN_REFINE_FLAGS_REQUIRE_DEVELOPER_NAME	= 1 << 27,
+	GS_PLUGIN_REFINE_FLAGS_REQUIRE_KUDOS		= 1 << 28,
 	GS_PLUGIN_REFINE_FLAGS_MASK			= ~0,
 } GsPluginRefineFlags;
 
@@ -271,6 +271,122 @@ typedef enum {
 } GsPluginUpdateAppsFlags;
 
 /**
+ * GsPluginManageAppFlags:
+ * @GS_PLUGIN_MANAGE_APP_FLAGS_NONE: No flags set.
+ * @GS_PLUGIN_MANAGE_APP_FLAGS_INTERACTIVE: User initiated the job.
+ * @GS_PLUGIN_MANAGE_APP_FLAGS_INSTALL: Install the app.
+ * @GS_PLUGIN_MANAGE_APP_FLAGS_REMOVE: Remove the app.
+ *
+ * Flags for an operation on an app.
+ *
+ * Since: 47
+ */
+typedef enum {
+	GS_PLUGIN_MANAGE_APP_FLAGS_NONE		= 0,
+	GS_PLUGIN_MANAGE_APP_FLAGS_INTERACTIVE	= 1 << 0,
+	GS_PLUGIN_MANAGE_APP_FLAGS_INSTALL	= 1 << 1,
+	GS_PLUGIN_MANAGE_APP_FLAGS_REMOVE	= 1 << 2,
+} GsPluginManageAppFlags;
+
+/**
+ * GsPluginUpdateCancelFlags:
+ * @GS_PLUGIN_UPDATE_CANCEL_FLAGS_NONE: No flags set.
+ * @GS_PLUGIN_UPDATE_CANCEL_FLAGS_INTERACTIVE: User initiated the job.
+ *
+ * Flags for an update-cancel operation.
+ *
+ * Since: 47
+ */
+typedef enum {
+	GS_PLUGIN_UPDATE_CANCEL_FLAGS_NONE		= 0,
+	GS_PLUGIN_UPDATE_CANCEL_FLAGS_INTERACTIVE	= 1 << 0,
+} GsPluginUpdateCancelFlags;
+
+/**
+ * GsPluginUpgradeDownloadFlags:
+ * @GS_PLUGIN_UPGRADE_DOWNLOAD_FLAGS_NONE: No flags set.
+ * @GS_PLUGIN_UPGRADE_DOWNLOAD_FLAGS_INTERACTIVE: User initiated the job.
+ *
+ * Flags for an upgrade-download operation.
+ *
+ * Since: 47
+ */
+typedef enum {
+	GS_PLUGIN_UPGRADE_DOWNLOAD_FLAGS_NONE		= 0,
+	GS_PLUGIN_UPGRADE_DOWNLOAD_FLAGS_INTERACTIVE	= 1 << 0,
+} GsPluginUpgradeDownloadFlags;
+
+/**
+ * GsPluginUpgradeTriggerFlags:
+ * @GS_PLUGIN_UPGRADE_TRIGGER_FLAGS_NONE: No flags set.
+ * @GS_PLUGIN_UPGRADE_TRIGGER_FLAGS_INTERACTIVE: User initiated the job.
+ *
+ * Flags for an upgrade-trigger operation.
+ *
+ * Since: 47
+ */
+typedef enum {
+	GS_PLUGIN_UPGRADE_TRIGGER_FLAGS_NONE		= 0,
+	GS_PLUGIN_UPGRADE_TRIGGER_FLAGS_INTERACTIVE	= 1 << 0,
+} GsPluginUpgradeTriggerFlags;
+
+/**
+ * GsPluginLaunchFlags:
+ * @GS_PLUGIN_LAUNCH_FLAGS_NONE: No flags set.
+ * @GS_PLUGIN_LAUNCH_FLAGS_INTERACTIVE: User initiated the job.
+ *
+ * Flags for a launch operation.
+ *
+ * Since: 47
+ */
+typedef enum {
+	GS_PLUGIN_LAUNCH_FLAGS_NONE		= 0,
+	GS_PLUGIN_LAUNCH_FLAGS_INTERACTIVE	= 1 << 0,
+} GsPluginLaunchFlags;
+
+/**
+ * GsPluginFileToAppFlags:
+ * @GS_PLUGIN_FILE_TO_APP_FLAGS_NONE: No flags set.
+ * @GS_PLUGIN_FILE_TO_APP_FLAGS_INTERACTIVE: User initiated the job.
+ *
+ * Flags for a file-to-app operation.
+ *
+ * Since: 47
+ */
+typedef enum {
+	GS_PLUGIN_FILE_TO_APP_FLAGS_NONE	= 0,
+	GS_PLUGIN_FILE_TO_APP_FLAGS_INTERACTIVE	= 1 << 0,
+} GsPluginFileToAppFlags;
+
+/**
+ * GsPluginUrlToAppFlags:
+ * @GS_PLUGIN_URL_TO_APP_FLAGS_NONE: No flags set.
+ * @GS_PLUGIN_URL_TO_APP_FLAGS_INTERACTIVE: User initiated the job.
+ *
+ * Flags for a url-to-app operation.
+ *
+ * Since: 47
+ */
+typedef enum {
+	GS_PLUGIN_URL_TO_APP_FLAGS_NONE	= 0,
+	GS_PLUGIN_URL_TO_APP_FLAGS_INTERACTIVE	= 1 << 0,
+} GsPluginUrlToAppFlags;
+
+/**
+ * GsPluginGetLangpacksFlags:
+ * @GS_PLUGIN_GET_LANGPACKS_FLAGS_NONE: No flags set.
+ * @GS_PLUGIN_GET_LANGPACKS_FLAGS_INTERACTIVE: User initiated the job.
+ *
+ * Flags for a get-langpacks operation.
+ *
+ * Since: 47
+ */
+typedef enum {
+	GS_PLUGIN_GET_LANGPACKS_FLAGS_NONE		= 0,
+	GS_PLUGIN_GET_LANGPACKS_FLAGS_INTERACTIVE	= 1 << 0,
+} GsPluginGetLangpacksFlags;
+
+/**
  * GsPluginProgressCallback:
  * @plugin: the #GsPlugin reporting its progress
  * @progress: the percentage completion (0–100 inclusive), or
@@ -347,6 +463,7 @@ typedef enum {
  * @GS_PLUGIN_ACTION_REMOVE_REPO:		Remove a repository (Since: 41)
  * @GS_PLUGIN_ACTION_ENABLE_REPO:		Enable a repository (Since: 41)
  * @GS_PLUGIN_ACTION_DISABLE_REPO:		Disable a repository (Since: 41)
+ * @GS_PLUGIN_ACTION_REFRESH_METADATA:		Refresh metadata (Since: 47)
  *
  * The plugin action.
  **/
@@ -368,6 +485,7 @@ typedef enum {
 	GS_PLUGIN_ACTION_REMOVE_REPO,
 	GS_PLUGIN_ACTION_ENABLE_REPO,
 	GS_PLUGIN_ACTION_DISABLE_REPO,
+	GS_PLUGIN_ACTION_REFRESH_METADATA,
 	GS_PLUGIN_ACTION_LAST  /*< skip >*/
 } GsPluginAction;
 

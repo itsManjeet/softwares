@@ -423,9 +423,9 @@ gs_epiphany_refine_app_state (GsPlugin *plugin,
 	}
 }
 
-void
-gs_plugin_adopt_app (GsPlugin *plugin,
-		     GsApp    *app)
+static void
+gs_plugin_epiphany_adopt_app (GsPlugin *plugin,
+			      GsApp    *app)
 {
 	if (gs_app_get_kind (app) == AS_COMPONENT_KIND_WEB_APP &&
 	    gs_app_get_bundle_kind (app) != AS_BUNDLE_KIND_PACKAGE) {
@@ -469,7 +469,7 @@ gs_plugin_epiphany_list_apps_async (GsPlugin              *plugin,
 static void
 refine_app (GsPluginEpiphany    *self,
 	    GsApp               *app,
-	    GsPluginRefineFlags  flags,
+	    GsPluginRefineFlags  refine_flags,
 	    GUri                *uri,
 	    const char          *url)
 {
@@ -565,7 +565,7 @@ refine_app (GsPluginEpiphany    *self,
 		name = g_app_info_get_name (G_APP_INFO (desktop_info));
 		gs_app_set_name (app, GS_APP_QUALITY_NORMAL, name);
 
-		if (flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_SIZE) {
+		if ((refine_flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_SIZE) != 0) {
 			g_autoptr(GFile) desktop_file = NULL;
 			const gchar *desktop_path;
 			guint64 install_date = 0;
@@ -587,7 +587,7 @@ refine_app (GsPluginEpiphany    *self,
 		}
 
 		icon_path = g_desktop_app_info_get_string (desktop_info, "Icon");
-		if (flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_SIZE &&
+		if ((refine_flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_SIZE) != 0 &&
 		    icon_path) {
 			icon_file = g_file_new_for_path (icon_path);
 
@@ -598,7 +598,7 @@ refine_app (GsPluginEpiphany    *self,
 			if (file_info)
 				icon_size = g_file_info_get_size (file_info);
 		}
-		if (flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_ICON &&
+		if ((refine_flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_ICON) != 0 &&
 		    !gs_app_has_icons (app) &&
 		    icon_path) {
 			g_autoptr(GIcon) icon = g_file_icon_new (icon_file);
@@ -879,18 +879,19 @@ static void refine_thread_cb (GTask        *task,
                               GCancellable *cancellable);
 
 static void
-gs_plugin_epiphany_refine_async (GsPlugin            *plugin,
-                                 GsAppList           *list,
-                                 GsPluginRefineFlags  flags,
-                                 GCancellable        *cancellable,
-                                 GAsyncReadyCallback  callback,
-                                 gpointer             user_data)
+gs_plugin_epiphany_refine_async (GsPlugin               *plugin,
+                                 GsAppList              *list,
+                                 GsPluginRefineJobFlags  job_flags,
+                                 GsPluginRefineFlags     refine_flags,
+                                 GCancellable           *cancellable,
+                                 GAsyncReadyCallback     callback,
+                                 gpointer                user_data)
 {
 	GsPluginEpiphany *self = GS_PLUGIN_EPIPHANY (plugin);
 	g_autoptr(GTask) task = NULL;
-	gboolean interactive = gs_plugin_has_flags (GS_PLUGIN (self), GS_PLUGIN_FLAGS_INTERACTIVE);
+	gboolean interactive = (job_flags & GS_PLUGIN_REFINE_JOB_FLAGS_INTERACTIVE) != 0;
 
-	task = gs_plugin_refine_data_new_task (plugin, list, flags, cancellable, callback, user_data);
+	task = gs_plugin_refine_data_new_task (plugin, list, job_flags, refine_flags, cancellable, callback, user_data);
 	g_task_set_source_tag (task, gs_plugin_epiphany_refine_async);
 
 	/* Queue a job for the refine. */
@@ -907,9 +908,9 @@ refine_thread_cb (GTask        *task,
 {
 	GsPluginEpiphany *self = GS_PLUGIN_EPIPHANY (source_object);
 	GsPluginRefineData *data = task_data;
-	GsPluginRefineFlags flags = data->flags;
+	GsPluginRefineFlags refine_flags = data->refine_flags;
 	GsAppList *list = data->list;
-	gboolean interactive = gs_plugin_has_flags (GS_PLUGIN (self), GS_PLUGIN_FLAGS_INTERACTIVE);
+	gboolean interactive = (data->job_flags & GS_PLUGIN_REFINE_JOB_FLAGS_INTERACTIVE) != 0;
 	g_autoptr(GError) local_error = NULL;
 
 	assert_in_worker (self);
@@ -936,7 +937,7 @@ refine_thread_cb (GTask        *task,
 		}
 
 		g_debug ("epiphany: refining app %s", gs_app_get_id (app));
-		gs_epiphany_refine_app (self, app, flags, url);
+		gs_epiphany_refine_app (self, app, refine_flags, url);
 		gs_epiphany_refine_app_state (GS_PLUGIN (self), app);
 
 		/* Usually the way to refine wildcard apps is to create a new
@@ -1018,39 +1019,130 @@ get_serialized_icon (GsApp *app,
 	return g_steal_pointer (&icon_v);
 }
 
-gboolean
-gs_plugin_app_install (GsPlugin      *plugin,
-		       GsApp         *app,
-		       GCancellable  *cancellable,
-		       GError       **error)
+typedef struct {
+	GTask *task; /* (owned) */
+	gchar *name; /* (owned) */
+	gchar *url; /* (owned) */
+} InstallData;
+
+static void
+install_data_free (InstallData *data)
+{
+	if (data != NULL) {
+		g_clear_object (&data->task);
+		g_free (&data->name);
+		g_free (&data->url);
+		g_free (data);
+	}
+}
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC (InstallData, install_data_free)
+
+static void
+gs_plugin_epiphany_install_app_installed (GObject *source_object,
+					  GAsyncResult *result,
+					  gpointer user_data)
+{
+	g_autoptr(InstallData) install_data = user_data;
+	GsPluginManageAppData *data = g_task_get_task_data (install_data->task);
+	GsPluginEpiphany *self = GS_PLUGIN_EPIPHANY (g_task_get_source_object (install_data->task));
+	g_autofree gchar *installed_app_id = NULL;
+	g_autoptr(GError) local_error = NULL;
+
+	if (!gs_ephy_web_app_provider_call_install_finish (GS_EPHY_WEB_APP_PROVIDER (source_object),
+							   &installed_app_id, result, &local_error)) {
+		gs_epiphany_error_convert (&local_error);
+		gs_app_set_state_recover (data->app);
+		g_task_return_error (install_data->task, g_steal_pointer (&local_error));
+		return;
+	}
+
+	{
+		g_autoptr(GMutexLocker) locker = g_mutex_locker_new (&self->installed_apps_mutex);
+		g_hash_table_insert (self->url_id_map, g_strdup (install_data->url),
+				     g_strdup (installed_app_id));
+	}
+
+	gs_app_set_launchable (data->app, AS_LAUNCHABLE_KIND_DESKTOP_ID, installed_app_id);
+	gs_app_set_state (data->app, GS_APP_STATE_INSTALLED);
+
+	g_task_return_boolean (install_data->task, TRUE);
+}
+
+static void
+gs_plugin_epiphany_install_app_token_requested (GObject *source_object,
+						GAsyncResult *result,
+						gpointer user_data)
+{
+	g_autoptr(InstallData) install_data = user_data;
+	GsPluginManageAppData *data = g_task_get_task_data (install_data->task);
+	GsPluginEpiphany *self = GS_PLUGIN_EPIPHANY (g_task_get_source_object (install_data->task));
+	GCancellable *cancellable = g_task_get_cancellable (install_data->task);
+	g_autoptr(GVariant) token_v = NULL;
+	g_autoptr(GError) local_error = NULL;
+	gboolean interactive = (data->flags & GS_PLUGIN_MANAGE_APP_FLAGS_INTERACTIVE) != 0;
+	const gchar *token = NULL;
+
+	token_v = g_dbus_proxy_call_finish (G_DBUS_PROXY (source_object), result, &local_error);
+	if (token_v == NULL) {
+		gs_epiphany_error_convert (&local_error);
+		gs_app_set_state_recover (data->app);
+		g_task_return_error (install_data->task, g_steal_pointer (&local_error));
+		return;
+	}
+
+	/* Then pass the token to Epiphany which will use xdg-desktop-portal to
+	 * complete the installation
+	 */
+	g_variant_get (token_v, "(&s)", &token);
+	gs_ephy_web_app_provider_call_install (self->epiphany_proxy,
+					       install_data->url, install_data->name, token,
+					       interactive ? G_DBUS_CALL_FLAGS_ALLOW_INTERACTIVE_AUTHORIZATION : G_DBUS_CALL_FLAGS_NONE,
+					       -1  /* timeout */,
+					       cancellable,
+					       gs_plugin_epiphany_install_app_installed,
+					       g_steal_pointer (&install_data));
+}
+
+static void
+gs_plugin_epiphany_install_app_async (GsPlugin *plugin,
+				      GsApp *app,
+				      GsPluginManageAppFlags flags,
+				      GCancellable *cancellable,
+				      GAsyncReadyCallback callback,
+				      gpointer user_data)
 {
 	GsPluginEpiphany *self = GS_PLUGIN_EPIPHANY (plugin);
 	const char *url;
 	const char *name;
-	const char *token = NULL;
-	g_autofree char *installed_app_id = NULL;
-	g_autoptr(GVariant) token_v = NULL;
 	g_autoptr(GVariant) icon_v = NULL;
+	g_autoptr(GTask) task = NULL;
 	GVariantBuilder opt_builder;
 	const int icon_sizes[] = {512, 192, 128, 1};
-	gboolean interactive = gs_plugin_has_flags (plugin, GS_PLUGIN_FLAGS_INTERACTIVE);
+	gboolean interactive = (flags & GS_PLUGIN_MANAGE_APP_FLAGS_INTERACTIVE) != 0;
+	InstallData *install_data = NULL;
 
-	if (!gs_app_has_management_plugin (app, plugin))
-		return TRUE;
+	task = gs_plugin_manage_app_data_new_task (plugin, app, flags, cancellable, callback, user_data);
+	g_task_set_source_tag (task, gs_plugin_epiphany_install_app_async);
+
+	if (!gs_app_has_management_plugin (app, plugin)) {
+		g_task_return_boolean (task, TRUE);
+		return;
+	}
 
 	url = gs_app_get_url (app, AS_URL_KIND_HOMEPAGE);
 	if (url == NULL || *url == '\0') {
-		g_set_error (error, GS_PLUGIN_ERROR, GS_PLUGIN_ERROR_FAILED,
-			     "Can't install web app %s without url",
-			     gs_app_get_id (app));
-		return FALSE;
+		g_task_return_new_error (task, GS_PLUGIN_ERROR, GS_PLUGIN_ERROR_FAILED,
+					 "Can't install web app %s without url",
+					 gs_app_get_id (app));
+		return;
 	}
 	name = gs_app_get_name (app);
 	if (name == NULL || *name == '\0') {
-		g_set_error (error, GS_PLUGIN_ERROR, GS_PLUGIN_ERROR_FAILED,
-			     "Can't install web app %s without name",
-			     gs_app_get_id (app));
-		return FALSE;
+		g_task_return_new_error (task, GS_PLUGIN_ERROR, GS_PLUGIN_ERROR_FAILED,
+					 "Can't install web app %s without name",
+					 gs_app_get_id (app));
+		return;
 	}
 	for (guint i = 0; i < G_N_ELEMENTS (icon_sizes); i++) {
 		GIcon *icon = gs_app_get_icon_for_size (app, icon_sizes[i], 1, NULL);
@@ -1060,94 +1152,61 @@ gs_plugin_app_install (GsPlugin      *plugin,
 			break;
 	}
 	if (icon_v == NULL) {
-		g_set_error (error, GS_PLUGIN_ERROR, GS_PLUGIN_ERROR_FAILED,
-			     "Can't install web app %s without icon",
-			     gs_app_get_id (app));
-		return FALSE;
+		g_task_return_new_error (task, GS_PLUGIN_ERROR, GS_PLUGIN_ERROR_FAILED,
+					 "Can't install web app %s without icon",
+					 gs_app_get_id (app));
+		return;
 	}
 
 	gs_app_set_state (app, GS_APP_STATE_INSTALLING);
+
+	install_data = g_new0 (InstallData, 1);
+	install_data->task = g_steal_pointer (&task);
+	install_data->name = g_strdup (name);
+	install_data->url = g_strdup (url);
+
 	/* First get a token from xdg-desktop-portal so Epiphany can do the
 	 * installation without user confirmation
 	 */
 	g_variant_builder_init (&opt_builder, G_VARIANT_TYPE_VARDICT);
-	token_v = g_dbus_proxy_call_sync (self->launcher_portal_proxy,
-					  "RequestInstallToken",
-					  g_variant_new ("(sva{sv})",
-							 name, icon_v, &opt_builder),
-					  interactive ? G_DBUS_CALL_FLAGS_ALLOW_INTERACTIVE_AUTHORIZATION : G_DBUS_CALL_FLAGS_NONE,
-					  -1, cancellable, error);
-	if (token_v == NULL) {
-		gs_epiphany_error_convert (error);
-		gs_app_set_state_recover (app);
-		return FALSE;
-	}
-
-	/* Then pass the token to Epiphany which will use xdg-desktop-portal to
-	 * complete the installation
-	 */
-	g_variant_get (token_v, "(&s)", &token);
-	if (!gs_ephy_web_app_provider_call_install_sync (self->epiphany_proxy,
-							 url, name, token,
-							 interactive ? G_DBUS_CALL_FLAGS_ALLOW_INTERACTIVE_AUTHORIZATION : G_DBUS_CALL_FLAGS_NONE,
-							 -1  /* timeout */,
-							 &installed_app_id,
-							 cancellable,
-							 error)) {
-		gs_epiphany_error_convert (error);
-		gs_app_set_state_recover (app);
-		return FALSE;
-	}
-
-	{
-		g_autoptr(GMutexLocker) locker = g_mutex_locker_new (&self->installed_apps_mutex);
-		g_hash_table_insert (self->url_id_map, g_strdup (url),
-				     g_strdup (installed_app_id));
-	}
-
-	gs_app_set_launchable (app, AS_LAUNCHABLE_KIND_DESKTOP_ID, installed_app_id);
-	gs_app_set_state (app, GS_APP_STATE_INSTALLED);
-
-	return TRUE;
+	g_dbus_proxy_call (self->launcher_portal_proxy,
+			   "RequestInstallToken",
+			   g_variant_new ("(sva{sv})",
+					  name, icon_v, &opt_builder),
+			   interactive ? G_DBUS_CALL_FLAGS_ALLOW_INTERACTIVE_AUTHORIZATION : G_DBUS_CALL_FLAGS_NONE,
+			   -1, cancellable,
+			   gs_plugin_epiphany_install_app_token_requested,
+			   g_steal_pointer (&install_data));
 }
 
-gboolean
-gs_plugin_app_remove (GsPlugin      *plugin,
-		      GsApp         *app,
-		      GCancellable  *cancellable,
-		      GError       **error)
+static gboolean
+gs_plugin_epiphany_install_app_finish (GsPlugin *plugin,
+				       GAsyncResult *result,
+				       GError **error)
 {
-	GsPluginEpiphany *self = GS_PLUGIN_EPIPHANY (plugin);
-	const char *installed_app_id;
+	return g_task_propagate_boolean (G_TASK (result), error);
+}
+
+static void
+gs_plugin_epiphany_remove_app_removed (GObject *source_object,
+				       GAsyncResult *result,
+				       gpointer user_data)
+{
+	g_autoptr(GTask) task = user_data;
+	GsPluginManageAppData *data = g_task_get_task_data (task);
+	GsPluginEpiphany *self = GS_PLUGIN_EPIPHANY (g_task_get_source_object (task));
+	g_autoptr(GError) local_error = NULL;
 	const char *url;
-	gboolean interactive = gs_plugin_has_flags (plugin, GS_PLUGIN_FLAGS_INTERACTIVE);
 
-	if (!gs_app_has_management_plugin (app, plugin))
-		return TRUE;
-
-	installed_app_id = gs_app_get_launchable (app, AS_LAUNCHABLE_KIND_DESKTOP_ID);
-	if (installed_app_id == NULL) {
-		g_set_error_literal (error,
-				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_NOT_SUPPORTED,
-				     "App can't be uninstalled without installed app ID");
-		gs_app_set_state_recover (app);
-		return FALSE;
+	if (!gs_ephy_web_app_provider_call_uninstall_finish (GS_EPHY_WEB_APP_PROVIDER (source_object),
+							     result, &local_error)) {
+		gs_app_set_state_recover (data->app);
+		gs_epiphany_error_convert (&local_error);
+		g_task_return_error (task, g_steal_pointer (&local_error));
+		return;
 	}
 
-	gs_app_set_state (app, GS_APP_STATE_REMOVING);
-	if (!gs_ephy_web_app_provider_call_uninstall_sync (self->epiphany_proxy,
-							   installed_app_id,
-							   interactive ? G_DBUS_CALL_FLAGS_ALLOW_INTERACTIVE_AUTHORIZATION : G_DBUS_CALL_FLAGS_NONE,
-							   -1  /* timeout */,
-							   cancellable,
-							   error)) {
-		gs_epiphany_error_convert (error);
-		gs_app_set_state_recover (app);
-		return FALSE;
-	}
-
-	url = gs_app_get_launchable (app, AS_LAUNCHABLE_KIND_URL);
+	url = gs_app_get_launchable (data->app, AS_LAUNCHABLE_KIND_URL);
 	if (url != NULL && *url != '\0') {
 		g_autoptr(GMutexLocker) locker = g_mutex_locker_new (&self->installed_apps_mutex);
 		g_hash_table_remove (self->url_id_map, url);
@@ -1156,21 +1215,76 @@ gs_plugin_app_remove (GsPlugin      *plugin,
 	/* The app is not necessarily available; it may have been installed
 	 * directly in Epiphany
 	 */
-	gs_app_set_state (app, GS_APP_STATE_UNKNOWN);
+	gs_app_set_state (data->app, GS_APP_STATE_UNKNOWN);
 
-	return TRUE;
+	g_task_return_boolean (task, TRUE);
 }
 
-gboolean
-gs_plugin_launch (GsPlugin      *plugin,
-		  GsApp         *app,
-		  GCancellable  *cancellable,
-		  GError       **error)
+static void
+gs_plugin_epiphany_remove_app_async (GsPlugin *plugin,
+				     GsApp *app,
+				     GsPluginManageAppFlags flags,
+				     GCancellable *cancellable,
+				     GAsyncReadyCallback callback,
+				     gpointer user_data)
 {
-	if (!gs_app_has_management_plugin (app, plugin))
-		return TRUE;
+	GsPluginEpiphany *self = GS_PLUGIN_EPIPHANY (plugin);
+	g_autoptr(GTask) task = NULL;
+	const char *installed_app_id;
+	gboolean interactive = (flags & GS_PLUGIN_MANAGE_APP_FLAGS_INTERACTIVE) != 0;
 
-	return gs_plugin_app_launch (plugin, app, error);
+	task = gs_plugin_manage_app_data_new_task (plugin, app, flags, cancellable, callback, user_data);
+	g_task_set_source_tag (task, gs_plugin_epiphany_install_app_async);
+
+	if (!gs_app_has_management_plugin (app, plugin)) {
+		g_task_return_boolean (task, TRUE);
+		return;
+	}
+
+	installed_app_id = gs_app_get_launchable (app, AS_LAUNCHABLE_KIND_DESKTOP_ID);
+	if (installed_app_id == NULL) {
+		gs_app_set_state_recover (app);
+		g_task_return_new_error (task, GS_PLUGIN_ERROR,
+					 GS_PLUGIN_ERROR_NOT_SUPPORTED,
+					 "%s", "App can't be uninstalled without installed app ID");
+		return;
+	}
+
+	gs_app_set_state (app, GS_APP_STATE_REMOVING);
+	gs_ephy_web_app_provider_call_uninstall (self->epiphany_proxy,
+						 installed_app_id,
+						 interactive ? G_DBUS_CALL_FLAGS_ALLOW_INTERACTIVE_AUTHORIZATION : G_DBUS_CALL_FLAGS_NONE,
+						 -1  /* timeout */,
+						 cancellable,
+						 gs_plugin_epiphany_remove_app_removed,
+						 g_steal_pointer (&task));
+}
+
+static gboolean
+gs_plugin_epiphany_remove_app_finish (GsPlugin *plugin,
+				      GAsyncResult *result,
+				      GError **error)
+{
+	return g_task_propagate_boolean (G_TASK (result), error);
+}
+
+static void
+gs_plugin_epiphany_launch_async (GsPlugin *plugin,
+				 GsApp *app,
+				 GsPluginLaunchFlags flags,
+				 GCancellable *cancellable,
+				 GAsyncReadyCallback callback,
+				 gpointer user_data)
+{
+	gs_plugin_app_launch_async (plugin, app, flags, cancellable, callback, user_data);
+}
+
+static gboolean
+gs_plugin_epiphany_launch_finish (GsPlugin *plugin,
+				  GAsyncResult *result,
+				  GError **error)
+{
+	return gs_plugin_app_launch_finish (plugin, result, error);
 }
 
 static void
@@ -1182,6 +1296,7 @@ gs_plugin_epiphany_class_init (GsPluginEpiphanyClass *klass)
 	object_class->dispose = gs_plugin_epiphany_dispose;
 	object_class->finalize = gs_plugin_epiphany_finalize;
 
+	plugin_class->adopt_app = gs_plugin_epiphany_adopt_app;
 	plugin_class->setup_async = gs_plugin_epiphany_setup_async;
 	plugin_class->setup_finish = gs_plugin_epiphany_setup_finish;
 	plugin_class->shutdown_async = gs_plugin_epiphany_shutdown_async;
@@ -1190,6 +1305,12 @@ gs_plugin_epiphany_class_init (GsPluginEpiphanyClass *klass)
 	plugin_class->refine_finish = gs_plugin_epiphany_refine_finish;
 	plugin_class->list_apps_async = gs_plugin_epiphany_list_apps_async;
 	plugin_class->list_apps_finish = gs_plugin_epiphany_list_apps_finish;
+	plugin_class->install_app_async = gs_plugin_epiphany_install_app_async;
+	plugin_class->install_app_finish = gs_plugin_epiphany_install_app_finish;
+	plugin_class->remove_app_async = gs_plugin_epiphany_remove_app_async;
+	plugin_class->remove_app_finish = gs_plugin_epiphany_remove_app_finish;
+	plugin_class->launch_async = gs_plugin_epiphany_launch_async;
+	plugin_class->launch_finish = gs_plugin_epiphany_launch_finish;
 }
 
 GType
