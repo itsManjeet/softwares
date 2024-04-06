@@ -36,6 +36,11 @@ typedef enum {
 	PROP_PLUGIN_LOADER,
 } GsAppReviewsDialogProperty;
 
+typedef struct {
+	GsReviewRow        *row;
+	GsAppReviewsDialog *dialog;
+} AsyncReviewData;
+
 static GParamSpec *obj_props[PROP_PLUGIN_LOADER + 1] = { NULL, };
 
 enum {
@@ -54,22 +59,47 @@ sort_reviews (AsReview **a, AsReview **b)
 }
 
 static void
+review_upvote_cb (GObject      *source_object,
+		  GAsyncResult *result,
+		  gpointer      user_data)
+{
+	GsOdrsProvider *odrs_provider = GS_ODRS_PROVIDER (source_object);
+	g_autoptr(GError) local_error = NULL;
+	AsyncReviewData *data = user_data;
+
+	if (!gs_odrs_provider_upvote_review_finish (odrs_provider, result, &local_error)) {
+		g_warning ("failed to upvote review on %s: %s",
+			   gs_app_get_id (data->dialog->app), local_error->message);
+		return;
+	}
+
+	gs_review_row_refresh (data->row);
+	g_free (data);
+}
+
+static void
 review_button_clicked_cb (GsReviewRow        *row,
                           GsReviewAction      action,
                           GsAppReviewsDialog *self)
 {
 	AsReview *review = gs_review_row_get_review (row);
+	AsyncReviewData *data = g_new0 (AsyncReviewData, 1);
 	g_autoptr(GError) local_error = NULL;
 
 	g_assert (self->odrs_provider != NULL);
 
+	data->row = row;
+	data->dialog = self;
+
 	/* FIXME: Make this async */
 	switch (action) {
 	case GS_REVIEW_ACTION_UPVOTE:
-		gs_odrs_provider_upvote_review (self->odrs_provider, self->app,
-						review, self->cancellable,
-						&local_error);
-		break;
+		gs_odrs_provider_upvote_review_async (self->odrs_provider, self->app,
+						      review, self->cancellable,
+						      review_upvote_cb,
+						      data);
+
+		return;
 	case GS_REVIEW_ACTION_DOWNVOTE:
 		gs_odrs_provider_downvote_review (self->odrs_provider, self->app,
 						  review, self->cancellable,

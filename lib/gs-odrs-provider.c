@@ -1779,29 +1779,76 @@ gs_odrs_provider_report_review (GsOdrsProvider  *self,
 	return gs_odrs_provider_vote (self, review, uri, cancellable, error);
 }
 
+static void
+upvote_review_thread (GTask		*task,
+		      gpointer	 	 source_object,
+		      gpointer	 	 task_data,
+		      GCancellable	*cancellable)
+{
+	GsOdrsProvider *self = GS_ODRS_PROVIDER (source_object);
+	AsReview *review = task_data;
+	g_autofree gchar *uri = NULL;
+	g_autoptr(GError) error = NULL;
+	gboolean success;
+
+	uri = g_strdup_printf ("%s/upvote", self->review_server);
+	success = gs_odrs_provider_vote (self, review, uri, cancellable, &error);
+
+	if (!success) {
+		g_task_return_error (task, g_steal_pointer (&error));
+		return;
+	}
+
+	g_task_return_boolean (task, TRUE);
+}
+
 /**
- * gs_odrs_provider_upvote_review:
+ * gs_odrs_provider_upvote_review_async:
  * @self: a #GsOdrsProvider
  * @app: the app whose review is being upvoted
  * @review: the review to upvote
  * @cancellable: (nullable): a #GCancellable, or %NULL
- * @error: return location for a #GError
+ * @callback: function to call when the asynchronous operation is complete
+ * @user_data: data to pass to @callback
  *
- * Add one vote to @review on @app.
+ * Add one vote to @review on @app asynchronously.
+ *
+ * Since: 46
+ */
+void
+gs_odrs_provider_upvote_review_async (GsOdrsProvider		 *self,
+				      GsApp			 *app,
+				      AsReview			 *review,
+				      GCancellable		 *cancellable,
+				      GAsyncReadyCallback	  callback,
+				      gpointer			  user_data)
+{
+	g_autoptr(GTask) task = NULL;
+
+	task = g_task_new (self, cancellable, callback, user_data);
+	g_task_set_source_tag (task, gs_odrs_provider_upvote_review_async);
+	g_task_set_task_data (task, g_object_ref (review), g_object_unref);
+	g_task_run_in_thread (task, upvote_review_thread);
+}
+
+/**
+ * gs_odrs_provider_upvote_review_finish:
+ * @self: a #GsOdrsProvider
+ * @result: result of the asynchronous operation
+ * @error: return location for a #GError, or %NULL
+ *
+ * Finish an asynchronous upvote operation started with
+ * gs_odrs_provider_upvote_review_async().
  *
  * Returns: %TRUE on success, %FALSE otherwise
- * Since: 41
+ * Since: 46
  */
 gboolean
-gs_odrs_provider_upvote_review (GsOdrsProvider  *self,
-                                GsApp           *app,
-                                AsReview        *review,
-                                GCancellable    *cancellable,
-                                GError         **error)
+gs_odrs_provider_upvote_review_finish (GsOdrsProvider	 *self,
+				       GAsyncResult	 *result,
+				       GError		**error)
 {
-	g_autofree gchar *uri = NULL;
-	uri = g_strdup_printf ("%s/upvote", self->review_server);
-	return gs_odrs_provider_vote (self, review, uri, cancellable, error);
+	return g_task_propagate_boolean (G_TASK (result), error);
 }
 
 /**
