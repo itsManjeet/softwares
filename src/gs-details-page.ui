@@ -1274,6 +1274,17 @@
 
         <child>
           <object class="GtkStackPage">
+            <property name="name">screenshot</property>
+            <property name="child">
+              <object class="GtkLabel">
+                <property name="label">Screenshot placeholder</property>
+              </object>
+            </property>
+          </object>
+        </child>
+
+        <child>
+          <object class="GtkStackPage">
             <property name="name">failed</property>
             <property name="child">
               <object class="AdwStatusPage" id="page_failed">

@@ -75,6 +75,7 @@ static void gs_details_page_app_refine_cb (GObject *source, GAsyncResult *res, g
 typedef enum {
 	GS_DETAILS_PAGE_STATE_LOADING,
 	GS_DETAILS_PAGE_STATE_READY,
+	GS_DETAILS_PAGE_STATE_SCREENSHOT,
 	GS_DETAILS_PAGE_STATE_FAILED
 } GsDetailsPageState;
 
@@ -211,6 +212,8 @@ gs_details_page_get_state (GsDetailsPage *self)
 		return GS_DETAILS_PAGE_STATE_LOADING;
 	else if (g_str_equal (visible_child_name, "ready"))
 		return GS_DETAILS_PAGE_STATE_READY;
+	else if (g_str_equal (visible_child_name, "screenshot"))
+		return GS_DETAILS_PAGE_STATE_SCREENSHOT;
 	else if (g_str_equal (visible_child_name, "failed"))
 		return GS_DETAILS_PAGE_STATE_FAILED;
 	else
@@ -230,6 +233,7 @@ gs_details_page_set_state (GsDetailsPage *self,
 		gtk_spinner_start (GTK_SPINNER (self->spinner_details));
 		break;
 	case GS_DETAILS_PAGE_STATE_READY:
+	case GS_DETAILS_PAGE_STATE_SCREENSHOT:
 	case GS_DETAILS_PAGE_STATE_FAILED:
 		gtk_spinner_stop (GTK_SPINNER (self->spinner_details));
 		break;
@@ -244,6 +248,9 @@ gs_details_page_set_state (GsDetailsPage *self,
 		break;
 	case GS_DETAILS_PAGE_STATE_READY:
 		gtk_stack_set_visible_child_name (GTK_STACK (self->stack_details), "ready");
+		break;
+	case GS_DETAILS_PAGE_STATE_SCREENSHOT:
+		gtk_stack_set_visible_child_name (GTK_STACK (self->stack_details), "screenshot");
 		break;
 	case GS_DETAILS_PAGE_STATE_FAILED:
 		gtk_stack_set_visible_child_name (GTK_STACK (self->stack_details), "failed");
@@ -2396,6 +2403,15 @@ gs_details_page_review_send_cb (GtkDialog *dialog,
 }
 
 static void
+gs_details_page_screenshot_carousel_clicked_cb (GsDetailsPage *self)
+{
+	g_print ("Signal GsScreenshotCarousel::screenshot-clicked received\n");
+	gs_details_page_set_state (self, GS_DETAILS_PAGE_STATE_SCREENSHOT);
+	g_print ("crash?\n");
+	return;
+}
+
+static void
 gs_details_page_write_review (GsDetailsPage *self)
 {
 	GtkWidget *dialog;
@@ -2523,6 +2539,9 @@ gs_details_page_get_property (GObject    *object,
 				g_value_set_string (value, gs_app_get_name (self->app));
 			else
 				g_value_set_string (value, NULL);
+			break;
+		case GS_DETAILS_PAGE_STATE_SCREENSHOT:
+			g_value_set_string (value, NULL);
 			break;
 		case GS_DETAILS_PAGE_STATE_FAILED:
 			g_value_set_string (value, NULL);
@@ -2838,6 +2857,9 @@ gs_details_page_init (GsDetailsPage *self)
 
 	g_signal_connect (self->list_box_featured_review, "row-activated",
 			  G_CALLBACK (featured_review_list_row_activated_cb), self);
+
+	g_signal_connect (self->screenshot_carousel, "screenshot-clicked",
+			  G_CALLBACK (gs_details_page_screenshot_carousel_clicked_cb), self);
 
 	gs_details_page_read_packaging_format_preference (self);
 

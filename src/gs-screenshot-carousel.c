@@ -63,6 +63,13 @@ static GParamSpec *obj_props[PROP_HAS_SCREENSHOTS + 1] = { NULL, };
 
 G_DEFINE_TYPE (GsScreenshotCarousel, gs_screenshot_carousel, GTK_TYPE_WIDGET)
 
+enum {
+	SIGNAL_SCREENSHOT_CLICKED,
+	SIGNAL_LAST
+};
+
+static guint signals[SIGNAL_LAST] = { 0 };
+
 static void
 _set_state (GsScreenshotCarousel *self, guint length, gboolean allow_fallback, gboolean is_online)
 {
@@ -83,7 +90,14 @@ gs_screenshot_carousel_img_clicked_cb (GtkWidget *ssimg,
 				       gpointer user_data)
 {
 	GsScreenshotCarousel *self = user_data;
-	adw_carousel_scroll_to (ADW_CAROUSEL (self->carousel), ssimg, TRUE);
+	//adw_carousel_scroll_to (ADW_CAROUSEL (self->carousel), ssimg, TRUE);
+
+
+	GtkWidget *parent = gtk_widget_get_parent ( GTK_WIDGET (self));
+	const char * name = gtk_widget_get_name (parent);
+	g_print ("%s\n", name);
+	g_signal_emit (self, signals[SIGNAL_SCREENSHOT_CLICKED], 0);
+	//gtk_widget_set_size_request ( GTK_WIDGET (self), gtk_widget_get_width (parent), gtk_widget_get_height (parent));
 }
 
 /**
@@ -301,6 +315,20 @@ gs_screenshot_carousel_class_init (GsScreenshotCarouselClass *klass)
 	object_class->dispose = gs_screenshot_carousel_dispose;
 	object_class->get_property = gs_screenshot_carousel_get_property;
 	object_class->set_property = gs_screenshot_carousel_set_property;
+
+
+	/**
+	 * GsScreenshotCarousel::screenshot-clicked:
+	 *
+	 * Emitted after screenshot has been clicked
+	 *
+	 * Since: 47
+	 */
+	signals[SIGNAL_SCREENSHOT_CLICKED] =
+		g_signal_new ("screenshot-clicked",
+		      G_TYPE_FROM_CLASS (object_class), G_SIGNAL_RUN_LAST,
+		      0, NULL, NULL, NULL,
+	     	      G_TYPE_NONE, 0);
 
 	/**
 	 * GsScreenshotCarousel:has-screenshots:
