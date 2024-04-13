@@ -1276,9 +1276,7 @@
           <object class="GtkStackPage">
             <property name="name">screenshot</property>
             <property name="child">
-              <object class="GtkLabel">
-                <property name="label">Screenshot placeholder</property>
-              </object>
+              <object class="GsScreenshotCarousel" id="viewer_screenshot_carousel"/>
             </property>
           </object>
         </child>

@@ -117,6 +117,7 @@ struct _GsDetailsPage
 	GtkWidget		*star;
 	GtkWidget		*label_review_count;
 	GtkWidget		*screenshot_carousel;
+	GtkWidget		*viewer_screenshot_carousel;
 	GtkWidget		*button_details_launch;
 	GtkStack		*links_stack;
 	GtkWidget		*label_no_metadata_info;
@@ -790,10 +791,13 @@ gs_details_page_refresh_screenshots (GsDetailsPage *self)
 		gboolean has_screenshots;
 
 		gs_screenshot_carousel_load_screenshots (GS_SCREENSHOT_CAROUSEL (self->screenshot_carousel), self->app, is_online, NULL);
+		gs_screenshot_carousel_load_screenshots (GS_SCREENSHOT_CAROUSEL (self->viewer_screenshot_carousel), self->app, is_online, NULL);
 		has_screenshots = gs_screenshot_carousel_get_has_screenshots (GS_SCREENSHOT_CAROUSEL (self->screenshot_carousel));
 		gtk_widget_set_visible (self->screenshot_carousel, has_screenshots);
+		gtk_widget_set_visible (self->viewer_screenshot_carousel, has_screenshots);
 	} else {
 		gtk_widget_set_visible (self->screenshot_carousel, FALSE);
+		gtk_widget_set_visible (self->viewer_screenshot_carousel, FALSE);
 	}
 }
 
@@ -2542,7 +2546,7 @@ gs_details_page_get_property (GObject    *object,
 				g_value_set_string (value, NULL);
 			break;
 		case GS_DETAILS_PAGE_STATE_SCREENSHOT:
-			g_value_set_string (value, NULL);
+			g_value_set_string (value, gs_app_get_name (self->app));
 			break;
 		case GS_DETAILS_PAGE_STATE_FAILED:
 			g_value_set_string (value, NULL);
@@ -2707,6 +2711,7 @@ gs_details_page_class_init (GsDetailsPageClass *klass)
 	gtk_widget_class_bind_template_child (widget_class, GsDetailsPage, star);
 	gtk_widget_class_bind_template_child (widget_class, GsDetailsPage, label_review_count);
 	gtk_widget_class_bind_template_child (widget_class, GsDetailsPage, screenshot_carousel);
+	gtk_widget_class_bind_template_child (widget_class, GsDetailsPage, viewer_screenshot_carousel);
 	gtk_widget_class_bind_template_child (widget_class, GsDetailsPage, button_details_launch);
 	gtk_widget_class_bind_template_child (widget_class, GsDetailsPage, links_stack);
 	gtk_widget_class_bind_template_child (widget_class, GsDetailsPage, label_no_metadata_info);
