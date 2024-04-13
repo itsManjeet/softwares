@@ -2403,7 +2403,8 @@ gs_details_page_review_send_cb (GtkDialog *dialog,
 }
 
 static void
-gs_details_page_screenshot_carousel_clicked_cb (GsDetailsPage *self)
+gs_details_page_screenshot_carousel_clicked_cb (GtkWidget *widget,
+						GsDetailsPage *self)
 {
 	g_print ("Signal GsScreenshotCarousel::screenshot-clicked received\n");
 	gs_details_page_set_state (self, GS_DETAILS_PAGE_STATE_SCREENSHOT);

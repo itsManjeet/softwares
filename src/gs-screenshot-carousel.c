@@ -93,9 +93,9 @@ gs_screenshot_carousel_img_clicked_cb (GtkWidget *ssimg,
 	//adw_carousel_scroll_to (ADW_CAROUSEL (self->carousel), ssimg, TRUE);
 
 
-	GtkWidget *parent = gtk_widget_get_parent ( GTK_WIDGET (self));
-	const char * name = gtk_widget_get_name (parent);
-	g_print ("%s\n", name);
+	//GtkWidget *parent = gtk_widget_get_parent ( GTK_WIDGET (self));
+	//const char * name = gtk_widget_get_name (parent);
+	//g_print ("%s\n", name);
 	g_signal_emit (self, signals[SIGNAL_SCREENSHOT_CLICKED], 0);
 	//gtk_widget_set_size_request ( GTK_WIDGET (self), gtk_widget_get_width (parent), gtk_widget_get_height (parent));
 }
