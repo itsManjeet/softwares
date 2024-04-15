@@ -23,6 +23,7 @@ typedef enum {
 G_DECLARE_FINAL_TYPE (GsScreenshotCarousel, gs_screenshot_carousel, GS, SCREENSHOT_CAROUSEL, GtkWidget)
 
 const gchar		*gs_screenshot_carousel_state_to_string (GsScreenshotCarouselState);
+void 			 gs_screenshot_carousel_state_from_string (GsScreenshotCarousel *screenshot_carousel, const gchar *state);
 GsScreenshotCarousel	*gs_screenshot_carousel_new	(void);
 void			 gs_screenshot_carousel_load_screenshots	(GsScreenshotCarousel *self,
 									 GsApp                *app,

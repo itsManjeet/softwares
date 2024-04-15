@@ -427,6 +427,7 @@
 
                             <child>
                               <object class="GsScreenshotCarousel" id="screenshot_carousel">
+                                <property name="state">normal</property>
                               </object>
                             </child>
 
@@ -1277,6 +1278,7 @@
             <property name="name">screenshot-viewer</property>
             <property name="child">
               <object class="GsScreenshotCarousel" id="viewer_screenshot_carousel"/>
+                <property name="state">large</property>
             </property>
           </object>
         </child>

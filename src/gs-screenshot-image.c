@@ -503,6 +503,18 @@ gs_screenshot_image_set_size (GsScreenshotImage *ssimg,
 	gtk_widget_set_size_request (ssimg->stack, -1, (gint) height);
 }
 
+void
+gs_screenshot_image_resize (GsScreenshotImage *ssimg,
+                            guint              width,
+                            guint              height)
+{
+	g_return_if_fail (GS_IS_SCREENSHOT_IMAGE (ssimg));
+	g_return_if_fail (width != 0);
+	g_return_if_fail (height != 0);
+
+
+}
+
 static gchar *
 gs_screenshot_get_cachefn_for_url (const gchar *url)
 {

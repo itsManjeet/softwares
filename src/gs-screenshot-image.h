@@ -36,6 +36,11 @@ void		 gs_screenshot_image_set_screenshot	(GsScreenshotImage	*ssimg,
 void		 gs_screenshot_image_set_size		(GsScreenshotImage	*ssimg,
 							 guint			 width,
 							 guint			 height);
+
+void		 gs_screenshot_image_resize		(GsScreenshotImage 	*ssimg,
+							 guint              	width,
+							 guint              	height);
+
 void		 gs_screenshot_image_load_async		(GsScreenshotImage	*ssimg,
 							 GCancellable		*cancellable);
 gboolean	 gs_screenshot_image_is_showing		(GsScreenshotImage	*ssimg);
