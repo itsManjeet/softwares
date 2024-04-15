@@ -1277,8 +1277,9 @@
           <object class="GtkStackPage">
             <property name="name">screenshot-viewer</property>
             <property name="child">
-              <object class="GsScreenshotCarousel" id="viewer_screenshot_carousel"/>
+              <object class="GsScreenshotCarousel" id="viewer_screenshot_carousel">
                 <property name="state">large</property>
+              </object>
             </property>
           </object>
         </child>

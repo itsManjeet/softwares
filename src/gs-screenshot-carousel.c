@@ -76,7 +76,6 @@ static void
 _set_state (GsScreenshotCarousel *self, guint length, gboolean allow_fallback, gboolean is_online)
 {
 	gboolean has_screenshots;
-	gs_screenshot_carousel_set_state(self, GS_SCREENSHOT_CAROUSEL_STATE_NORMAL);
 
 	gtk_widget_set_visible (self->carousel_indicator, length > 1);
 	gtk_stack_set_visible_child_name (self->stack, length > 0 ? "carousel" : "fallback");
@@ -131,21 +130,21 @@ gs_screenshot_carousel_state_to_string (GsScreenshotCarouselState state)
 	return NULL;
 }
 
-void
-gs_screenshot_carousel_state_from_string (GsScreenshotCarousel *screenshot_carousel,
-					  const gchar *state)
-{
-	if (g_strcmp0 (state, "normal"))
-		gs_screenshot_carousel_set_state (screenshot_carousel,
-						  GS_SCREENSHOT_CAROUSEL_STATE_NORMAL);
-	else if (g_strcmp0 (state, "large"))
-		gs_screenshot_carousel_set_state (screenshot_carousel,
-						  GS_SCREENSHOT_CAROUSEL_STATE_LARGE);
-	else
-		g_assert_not_reached();
+/* void */
+/* gs_screenshot_carousel_state_from_string (GsScreenshotCarousel *screenshot_carousel, */
+/* 					  const gchar *state) */
+/* { */
+/* 	if (g_strcmp0 (state, "normal")) */
+/* 		gs_screenshot_carousel_set_state (screenshot_carousel, */
+/* 						  GS_SCREENSHOT_CAROUSEL_STATE_NORMAL); */
+/* 	else if (g_strcmp0 (state, "large")) */
+/* 		gs_screenshot_carousel_set_state (screenshot_carousel, */
+/* 						  GS_SCREENSHOT_CAROUSEL_STATE_LARGE); */
+/* 	else */
+/* 		g_assert_not_reached(); */
 
-	return;
-}
+/* 	return; */
+/* } */
 
 static void
 gs_screenshot_carousel_img_clicked_cb (GtkWidget *ssimg,
@@ -167,7 +166,7 @@ gs_screenshot_carousel_img_clicked_cb (GtkWidget *ssimg,
 		new_state = GS_SCREENSHOT_CAROUSEL_STATE_NORMAL;
 	gs_screenshot_carousel_set_state (self, new_state);
 	_image_set_size (GS_SCREENSHOT_IMAGE (ssimg), new_state);
-	/* g_signal_emit (self, signals[SIGNAL_SCREENSHOT_CLICKED], 0); */
+	g_signal_emit (self, signals[SIGNAL_SCREENSHOT_CLICKED], 0);
 	//gtk_widget_set_size_request ( GTK_WIDGET (self), gtk_widget_get_width (parent), gtk_widget_get_height (parent));
 }
 
@@ -361,8 +360,10 @@ gs_screenshot_carousel_set_property (GObject *object, guint prop_id, const GValu
 		break;
 	case PROP_STATE:
 		g_print("%s\n", g_type_name (g_value_get_type ()));
-		gs_screenshot_carousel_state_from_string (GS_SCREENSHOT_CAROUSEL (object),
-							  g_value_get_string (value));
+		g_print("%d\n", g_value_get_enum (value));
+		/* gs_screenshot_carousel_state_from_string (GS_SCREENSHOT_CAROUSEL (object), */
+		/* 					  g_value_get_enum (value)); */
+		gs_screenshot_carousel_set_state (GS_SCREENSHOT_CAROUSEL (object), g_value_get_enum (value));
 		break;
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
