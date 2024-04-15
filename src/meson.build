@@ -20,6 +20,7 @@ enums = gnome.mkenums_simple('gs-enums',
   sources : [
     'gs-context-dialog-row.h',
     'gs-updates-paused-banner.h',
+    'gs-screenshot-carousel.h'
   ],
   install_header : false,
 )

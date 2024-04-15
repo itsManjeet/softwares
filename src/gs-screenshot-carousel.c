@@ -53,13 +53,15 @@ struct _GsScreenshotCarousel
 	GtkWidget		*carousel;
 	GtkWidget		*carousel_indicator;
 	GtkStack                *stack;
+	GsScreenshotCarouselState state;
 };
 
 typedef enum {
 	PROP_HAS_SCREENSHOTS = 1,
+	PROP_STATE
 } GsScreenshotCarouselProperty;
 
-static GParamSpec *obj_props[PROP_HAS_SCREENSHOTS + 1] = { NULL, };
+static GParamSpec *obj_props[PROP_STATE + 1] = { NULL, };
 
 G_DEFINE_TYPE (GsScreenshotCarousel, gs_screenshot_carousel, GTK_TYPE_WIDGET)
 
@@ -74,6 +76,8 @@ static void
 _set_state (GsScreenshotCarousel *self, guint length, gboolean allow_fallback, gboolean is_online)
 {
 	gboolean has_screenshots;
+	gs_screenshot_carousel_set_state(self, GS_SCREENSHOT_CAROUSEL_STATE_NORMAL);
+	g_object_notify_by_pspec (G_OBJECT (self), obj_props[PROP_STATE]);
 
 	gtk_widget_set_visible (self->carousel_indicator, length > 1);
 	gtk_stack_set_visible_child_name (self->stack, length > 0 ? "carousel" : "fallback");
@@ -84,6 +88,29 @@ _set_state (GsScreenshotCarousel *self, guint length, gboolean allow_fallback, g
 		g_object_notify_by_pspec (G_OBJECT (self), obj_props[PROP_HAS_SCREENSHOTS]);
 	}
 }
+
+GsScreenshotCarouselState
+gs_screenshot_carousel_get_state (GsScreenshotCarousel *screenshot_carousel)
+{
+	return screenshot_carousel->state;
+}
+
+void
+gs_screenshot_carousel_set_state (GsScreenshotCarousel 		*screenshot_carousel,
+				  GsScreenshotCarouselState	state) {
+	screenshot_carousel->state = state;
+}
+
+const gchar *
+gs_screenshot_carousel_state_to_string (GsScreenshotCarouselState state)
+{
+	if (state == GS_SCREENSHOT_CAROUSEL_STATE_NORMAL)
+		return "normal";
+	if (state == GS_SCREENSHOT_CAROUSEL_STATE_LARGE)
+		return "large";
+	return NULL;
+}
+
 
 static void
 gs_screenshot_carousel_img_clicked_cb (GtkWidget *ssimg,
@@ -96,6 +123,8 @@ gs_screenshot_carousel_img_clicked_cb (GtkWidget *ssimg,
 	//GtkWidget *parent = gtk_widget_get_parent ( GTK_WIDGET (self));
 	//const char * name = gtk_widget_get_name (parent);
 	//g_print ("%s\n", name);
+	g_print ("%s\n", gs_screenshot_carousel_state_to_string (self->state));
+
 	g_signal_emit (self, signals[SIGNAL_SCREENSHOT_CLICKED], 0);
 	//gtk_widget_set_size_request ( GTK_WIDGET (self), gtk_widget_get_width (parent), gtk_widget_get_height (parent));
 }
@@ -154,9 +183,20 @@ gs_screenshot_carousel_load_screenshots (GsScreenshotCarousel *self, GsApp *app,
 		GtkWidget *ssimg = gs_screenshot_image_new (self->session);
 		gtk_widget_set_can_focus (gtk_widget_get_first_child (ssimg), FALSE);
 		gs_screenshot_image_set_screenshot (GS_SCREENSHOT_IMAGE (ssimg), ss);
-		gs_screenshot_image_set_size (GS_SCREENSHOT_IMAGE (ssimg),
-					      GS_IMAGE_NORMAL_WIDTH,
-					      GS_IMAGE_NORMAL_HEIGHT);
+		switch (self->state) {
+		case GS_SCREENSHOT_CAROUSEL_STATE_NORMAL:
+			gs_screenshot_image_set_size (GS_SCREENSHOT_IMAGE (ssimg),
+				GS_IMAGE_NORMAL_WIDTH,
+				GS_IMAGE_NORMAL_HEIGHT);
+			break;
+		case GS_SCREENSHOT_CAROUSEL_STATE_LARGE:
+			gs_screenshot_image_set_size (GS_SCREENSHOT_IMAGE (ssimg),
+				GS_IMAGE_LARGE_WIDTH,
+				GS_IMAGE_LARGE_HEIGHT);
+			break;
+		default:
+			g_assert_not_reached ();
+		}
 		gtk_widget_add_css_class (ssimg, "screenshot-image-main");
 		gs_screenshot_image_load_async (GS_SCREENSHOT_IMAGE (ssimg), cancellable);
 
@@ -341,6 +381,19 @@ gs_screenshot_carousel_class_init (GsScreenshotCarouselClass *klass)
 		g_param_spec_boolean ("has-screenshots", NULL, NULL,
 				      FALSE,
 				      G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
+
+	/**
+	 * GsScreenshotCarousel:state:
+	 *
+	 * Defines the state that the carousel is in.
+	 *
+	 * Since: 47
+	 */
+	obj_props[PROP_STATE] =
+		g_param_spec_enum ("state", NULL, NULL,
+				   GS_TYPE_SCREENSHOT_CAROUSEL_STATE,
+				   GS_SCREENSHOT_CAROUSEL_STATE_NORMAL,
+				   G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
 
 	g_object_class_install_properties (object_class, G_N_ELEMENTS (obj_props), obj_props);
 
