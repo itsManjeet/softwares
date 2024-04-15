@@ -75,7 +75,7 @@ static void gs_details_page_app_refine_cb (GObject *source, GAsyncResult *res, g
 typedef enum {
 	GS_DETAILS_PAGE_STATE_LOADING,
 	GS_DETAILS_PAGE_STATE_READY,
-	GS_DETAILS_PAGE_STATE_VIEWER,
+	GS_DETAILS_PAGE_STATE_SCREENSHOT_VIEWER,
 	GS_DETAILS_PAGE_STATE_FAILED
 } GsDetailsPageState;
 
@@ -215,7 +215,7 @@ gs_details_page_get_state (GsDetailsPage *self)
 	else if (g_str_equal (visible_child_name, "ready"))
 		return GS_DETAILS_PAGE_STATE_READY;
 	else if (g_str_equal (visible_child_name, "screenshot-viewer"))
-		return GS_DETAILS_PAGE_STATE_VIEWER;
+		return GS_DETAILS_PAGE_STATE_SCREENSHOT_VIEWER;
 	else if (g_str_equal (visible_child_name, "failed"))
 		return GS_DETAILS_PAGE_STATE_FAILED;
 	else
@@ -235,7 +235,7 @@ gs_details_page_set_state (GsDetailsPage *self,
 		gtk_spinner_start (GTK_SPINNER (self->spinner_details));
 		break;
 	case GS_DETAILS_PAGE_STATE_READY:
-	case GS_DETAILS_PAGE_STATE_VIEWER:
+	case GS_DETAILS_PAGE_STATE_SCREENSHOT_VIEWER:
 	case GS_DETAILS_PAGE_STATE_FAILED:
 		gtk_spinner_stop (GTK_SPINNER (self->spinner_details));
 		break;
@@ -251,7 +251,7 @@ gs_details_page_set_state (GsDetailsPage *self,
 	case GS_DETAILS_PAGE_STATE_READY:
 		gtk_stack_set_visible_child_name (GTK_STACK (self->stack_details), "ready");
 		break;
-	case GS_DETAILS_PAGE_STATE_VIEWER:
+	case GS_DETAILS_PAGE_STATE_SCREENSHOT_VIEWER:
 		gtk_stack_set_visible_child_name (GTK_STACK (self->stack_details), "screenshot-viewer");
 		break;
 	case GS_DETAILS_PAGE_STATE_FAILED:
@@ -2412,7 +2412,7 @@ gs_details_page_screenshot_carousel_clicked_cb (GtkWidget *widget,
 						GsDetailsPage *self)
 {
 	g_print ("Signal GsScreenshotCarousel::screenshot-clicked received\n");
-	gs_details_page_set_state (self, GS_DETAILS_PAGE_STATE_VIEWER);
+	gs_details_page_set_state (self, GS_DETAILS_PAGE_STATE_SCREENSHOT_VIEWER);
 	g_print ("crash?\n");
 	return;
 }
@@ -2546,7 +2546,7 @@ gs_details_page_get_property (GObject    *object,
 			else
 				g_value_set_string (value, NULL);
 			break;
-		case GS_DETAILS_PAGE_STATE_VIEWER:
+		case GS_DETAILS_PAGE_STATE_SCREENSHOT_VIEWER:
 			g_value_set_string (value, gs_app_get_name (self->app));
 			break;
 		case GS_DETAILS_PAGE_STATE_FAILED:
