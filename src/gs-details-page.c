@@ -187,12 +187,12 @@ enum {
 typedef enum {
 	PROP_ODRS_PROVIDER = 1,
 	PROP_IS_NARROW,
-	PROP_VIEWER_TOPBAR_INVISIBLE,
+	PROP_VIEWER_TOP_BAR_VISIBLE,
 	/* Override properties: */
 	PROP_TITLE,
 } GsDetailsPageProperty;
 
-static GParamSpec *obj_props[PROP_VIEWER_TOPBAR_INVISIBLE + 1] = { NULL, };
+static GParamSpec *obj_props[PROP_VIEWER_TOP_BAR_VISIBLE + 1] = { NULL, };
 static guint signals[SIGNAL_LAST] = { 0 };
 
 static void
@@ -2666,15 +2666,15 @@ gs_details_page_class_init (GsDetailsPageClass *klass)
 
 
 	/**
-	 * GsDetailsPage:viewer-topbar-invisible:
+	 * GsDetailsPage:viewer-top-bar-visible:
 	 *
-	 * Whether the topbar should be invisible.
+	 * Whether the top bar should be visible.
 	 *
 	 * Since: 47
 	 */
-	obj_props[PROP_VIEWER_TOPBAR_INVISIBLE] =
-		g_param_spec_boolean ("viewer-topbar-invisible", NULL, NULL,
-				      FALSE,
+	obj_props[PROP_VIEWER_TOP_BAR_VISIBLE] =
+		g_param_spec_boolean ("viewer-top-bar-visible", NULL, NULL,
+				      TRUE,
 				      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY);
 
 	g_object_class_install_properties (object_class, G_N_ELEMENTS (obj_props), obj_props);
