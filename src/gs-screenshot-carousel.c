@@ -46,6 +46,7 @@ struct _GsScreenshotCarousel
 	SoupSession		*session;  /* (owned) (not nullable) */
 	gboolean		 has_screenshots;
 
+	GtkWidget		*test_overlay;
 	GtkWidget		*button_next;
 	GtkWidget		*button_next_revealer;
 	GtkWidget		*button_previous;
@@ -67,6 +68,7 @@ G_DEFINE_TYPE (GsScreenshotCarousel, gs_screenshot_carousel, GTK_TYPE_WIDGET)
 
 enum {
 	SIGNAL_SCREENSHOT_CLICKED,
+	SIGNAL_BACKGROUND_CLICKED,
 	SIGNAL_LAST
 };
 
@@ -151,26 +153,13 @@ gs_screenshot_carousel_img_clicked_cb (GtkWidget *ssimg,
 				       gpointer user_data)
 {
 	GsScreenshotCarousel *self = user_data;
-	//adw_carousel_scroll_to (ADW_CAROUSEL (self->carousel), ssimg, TRUE);
+	adw_carousel_scroll_to (ADW_CAROUSEL (self->carousel), ssimg, TRUE);
 
-
-	//GtkWidget *parent = gtk_widget_get_parent ( GTK_WIDGET (self));
-	//const char * name = gtk_widget_get_name (parent);
-	//g_print ("%s\n", name);
 	GsScreenshotCarouselState state = gs_screenshot_carousel_get_state (self);
-	GsScreenshotCarouselState new_state;
-	g_print ("GsScreenshotCarousel:state: Changing from %s to opposing state\n", gs_screenshot_carousel_state_to_string (state));
-	if (state == GS_SCREENSHOT_CAROUSEL_STATE_NORMAL)
-		new_state = GS_SCREENSHOT_CAROUSEL_STATE_LARGE;
-	else
-		new_state = GS_SCREENSHOT_CAROUSEL_STATE_NORMAL;
-	gs_screenshot_carousel_set_state (self, new_state);
-	_image_set_size (GS_SCREENSHOT_IMAGE (ssimg), new_state);
+	g_print ("GsScreenshotCarousel:state: %s \n", gs_screenshot_carousel_state_to_string (state));
 	g_signal_emit (self, signals[SIGNAL_SCREENSHOT_CLICKED], 0);
-	//gtk_widget_set_size_request ( GTK_WIDGET (self), gtk_widget_get_width (parent), gtk_widget_get_height (parent));
+
 }
-
-
 
 /**
  * gs_screenshot_carousel_load_screenshots:
@@ -408,6 +397,20 @@ gs_screenshot_carousel_class_init (GsScreenshotCarouselClass *klass)
 	     	      G_TYPE_NONE, 0);
 
 	/**
+	 * GsScreenshotCarousel::screenshot-clicked:
+	 *
+	 * Emitted after screenshot has been clicked
+	 *
+	 * Since: 47
+	 */
+	signals[SIGNAL_BACKGROUND_CLICKED] =
+		g_signal_new ("background-clicked",
+		      G_TYPE_FROM_CLASS (object_class), G_SIGNAL_RUN_LAST,
+		      0, NULL, NULL, NULL,
+	     	      G_TYPE_NONE, 0);
+
+
+	/**
 	 * GsScreenshotCarousel:has-screenshots:
 	 *
 	 * Whether the carousel contains any screenshots.
@@ -436,6 +439,7 @@ gs_screenshot_carousel_class_init (GsScreenshotCarouselClass *klass)
 
 	gtk_widget_class_set_template_from_resource (widget_class, "/org/gnome/Software/gs-screenshot-carousel.ui");
 
+	gtk_widget_class_bind_template_child (widget_class, GsScreenshotCarousel, test_overlay);
 	gtk_widget_class_bind_template_child (widget_class, GsScreenshotCarousel, button_next);
 	gtk_widget_class_bind_template_child (widget_class, GsScreenshotCarousel, button_next_revealer);
 	gtk_widget_class_bind_template_child (widget_class, GsScreenshotCarousel, button_previous);
@@ -454,8 +458,22 @@ gs_screenshot_carousel_class_init (GsScreenshotCarouselClass *klass)
 }
 
 static void
+gesture_released_cb (GtkGestureClick* self,
+  gint n_press,
+  gdouble x,
+  gdouble y,
+  gpointer user_data)
+{
+	GsScreenshotCarousel *screenshot_carousel = user_data;
+	if (n_press == 1) {
+		g_signal_emit (screenshot_carousel, signals[SIGNAL_BACKGROUND_CLICKED], 0);
+	}
+}
+
+static void
 gs_screenshot_carousel_init (GsScreenshotCarousel *self)
 {
+        GtkGesture *gesture;
 	gtk_widget_init_template (GTK_WIDGET (self));
 
 	/* Disable scrolling through the carousel, as it’s typically used
@@ -464,6 +482,13 @@ gs_screenshot_carousel_init (GsScreenshotCarousel *self)
 
 	/* setup networking */
 	self->session = gs_build_soup_session ();
+
+	/* setup background click on Overlay */
+	gesture = gtk_gesture_click_new ();
+	g_signal_connect (gesture, "released",
+			G_CALLBACK (gesture_released_cb),
+			self);
+	gtk_widget_add_controller (self->test_overlay, GTK_EVENT_CONTROLLER (gesture));
 }
 
 /**
@@ -480,3 +505,4 @@ gs_screenshot_carousel_new (void)
 {
 	return GS_SCREENSHOT_CAROUSEL (g_object_new (GS_TYPE_SCREENSHOT_CAROUSEL, NULL));
 }
+

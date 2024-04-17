@@ -2413,7 +2413,15 @@ gs_details_page_screenshot_carousel_clicked_cb (GtkWidget *widget,
 {
 	g_print ("Signal GsScreenshotCarousel::screenshot-clicked received\n");
 	gs_details_page_set_state (self, GS_DETAILS_PAGE_STATE_SCREENSHOT_VIEWER);
-	g_print ("crash?\n");
+	return;
+}
+
+static void
+gs_details_page_screenshot_carousel_background_clicked_cb (GtkWidget     *widget,
+                                                           GsDetailsPage *self)
+{
+	g_print ("Signal GsScreenshotCarousel::background-clicked received\n");
+	gs_details_page_set_state (self, GS_DETAILS_PAGE_STATE_READY);
 	return;
 }
 
@@ -2505,6 +2513,11 @@ gs_details_page_setup (GsPage *page,
 	self->plugin_loader = g_object_ref (plugin_loader);
 	self->cancellable = g_cancellable_new ();
 	g_cancellable_connect (cancellable, G_CALLBACK (gs_details_page_cancel_cb), self, NULL);
+
+	/* g_signal_connect (self->screenshot_viewer_eventbox, "button-press-event", */
+	/* 	  G_CALLBACK (gs_details_page_screenshot_viewer_background_pressed_cb), */
+	/* 	  self); */
+
 
 	g_signal_connect_object (self->shell, "notify::allocation-width",
 				 G_CALLBACK (gs_details_page_shell_allocation_width_cb),
@@ -2880,6 +2893,9 @@ gs_details_page_init (GsDetailsPage *self)
 
 	g_signal_connect (self->screenshot_carousel, "screenshot-clicked",
 			  G_CALLBACK (gs_details_page_screenshot_carousel_clicked_cb), self);
+
+	g_signal_connect (self->viewer_screenshot_carousel, "background-clicked",
+			  G_CALLBACK (gs_details_page_screenshot_carousel_background_clicked_cb), self);
 
 	gs_details_page_read_packaging_format_preference (self);
 

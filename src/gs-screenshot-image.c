@@ -46,6 +46,7 @@ G_DEFINE_TYPE (GsScreenshotImage, gs_screenshot_image, GTK_TYPE_WIDGET)
 
 enum {
 	SIGNAL_CLICKED,
+	SIGNAL_BACKGROUND_CLICKED,
 	SIGNAL_LAST
 };
 
@@ -927,7 +928,7 @@ gs_screenshot_image_init (GsScreenshotImage *ssimg)
 	gesture = gtk_gesture_click_new ();
 	g_signal_connect_object (gesture, "released",
 		G_CALLBACK (gs_screenshot_image_clicked_cb), ssimg, 0);
-	gtk_widget_add_controller (GTK_WIDGET (ssimg), GTK_EVENT_CONTROLLER (gesture));
+	gtk_widget_add_controller (GTK_WIDGET (ssimg->image1), GTK_EVENT_CONTROLLER (gesture));
 }
 
 static void
