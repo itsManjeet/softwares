@@ -446,6 +446,8 @@ update_finished_cb (GObject *object, GAsyncResult *res, gpointer user_data)
 	GsPluginLoader *plugin_loader = GS_PLUGIN_LOADER (object);
 	g_autoptr(GError) error = NULL;
 	g_autoptr(GsAppList) list = NULL;
+	g_autoptr(GsAppList) updates_list = NULL;
+	GsAppList *job_apps;
 
 	/* get result */
 	list = gs_plugin_loader_job_process_finish (plugin_loader, res, &error);
@@ -457,11 +459,21 @@ update_finished_cb (GObject *object, GAsyncResult *res, gpointer user_data)
 		return;
 	}
 
+	/* notify about any installed apps which were also part of this job */
+	updates_list = gs_app_list_copy (list);
+	job_apps = gs_plugin_job_update_apps_get_apps (GS_PLUGIN_JOB_UPDATE_APPS (data->job));
+	for (guint i = 0; i < gs_app_list_length (job_apps); i++) {
+		GsApp *app = gs_app_list_index (job_apps, i);
+		if (gs_app_get_state (app) == GS_APP_STATE_INSTALLED) {
+			gs_app_list_add (updates_list, app);
+		}
+	}
+
 	/* notifications are optional */
 	if (g_settings_get_boolean (monitor->settings, "download-updates-notify")) {
 		g_autoptr(GNotification) n = NULL;
 		gs_application_withdraw_notification (monitor->application, "updates-installed");
-		n = _build_autoupdated_notification (monitor, list);
+		n = _build_autoupdated_notification (monitor, updates_list);
 		if (n != NULL)
 			gs_application_send_notification (monitor->application, "updates-installed", n, MINUTES_IN_A_DAY);
 	}
@@ -508,6 +520,11 @@ download_finished_cb (GObject *object, GAsyncResult *res, gpointer user_data)
 		GsApp *app = gs_app_list_index (job_apps, i);
 		if (_should_auto_update (app)) {
 			g_debug ("auto-updating %s", gs_app_get_unique_id (app));
+			gs_app_list_add (update_online, app);
+		} else if (gs_app_get_state (app) == GS_APP_STATE_INSTALLED) {
+			/* if the app state is back to INSTALLED already, keep it in the
+			 * apps list passed to the job so update_finished_cb can notify
+			 * about this update along with the others */
 			gs_app_list_add (update_online, app);
 		} else {
 			gs_app_list_add (update_offline, app);
