@@ -1356,9 +1356,12 @@ gs_details_page_refresh_all (GsDetailsPage *self)
  		adw_banner_set_button_label (self->translation_banner, NULL);
 	}
 
-	adw_banner_set_revealed (self->translation_banner,
-				 gs_app_get_has_translations (self->app) &&
-				 !gs_app_has_kudo (self->app, GS_APP_KUDO_MY_LANGUAGE));
+	if (gs_app_get_has_translations (self->app) && !gs_app_has_kudo (self->app, GS_APP_KUDO_MY_LANGUAGE)) {
+		/*Only add margins to box_details when the AdwBanner is revealed */
+		gtk_widget_add_css_class (GTK_WIDGET (self->box_details), "details-page");
+	  	adw_banner_set_revealed (self->translation_banner, TRUE);
+	}
+
 
 	/* set the description */
 	tmp = gs_app_get_description (self->app);
