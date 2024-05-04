@@ -93,9 +93,9 @@ gs_moderate_page_review_clicked_cb (GsReviewRow *row,
 	/* FIXME: Make this async */
 	switch (action) {
 	case GS_REVIEW_ACTION_UPVOTE:
-		gs_odrs_provider_upvote_review (self->odrs_provider, app,
-						review, self->cancellable,
-						&local_error);
+		/* gs_odrs_provider_upvote_review (self->odrs_provider, app, */
+		/* 				review, self->cancellable, */
+		/* 				&local_error); */
 		break;
 	case GS_REVIEW_ACTION_DOWNVOTE:
 		gs_odrs_provider_downvote_review (self->odrs_provider, app,
