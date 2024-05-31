@@ -49,7 +49,6 @@ populate_version_history (GsAppVersionHistoryDialog *dialog,
 						     gs_app_get_version (app),
 						     gs_app_get_release_date (app), NULL, FALSE);
 		gtk_list_box_append (GTK_LIST_BOX (dialog->listbox), row);
-		gtk_widget_set_visible (row, TRUE);
 		return;
 	}
 
@@ -94,7 +93,6 @@ populate_version_history (GsAppVersionHistoryDialog *dialog,
 						     is_installed);
 
 		gtk_list_box_append (GTK_LIST_BOX (dialog->listbox), row);
-		gtk_widget_set_visible (row, TRUE);
 	}
 }
 
