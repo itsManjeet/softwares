@@ -71,6 +71,10 @@ main (int argc, char **argv)
 		NULL
 	};
 
+	/* The tests access the system proxy schemas, so pre-load those before
+	 * %G_TEST_OPTION_ISOLATE_DIRS resets the XDG system dirs. */
+	g_settings_schema_source_get_default ();
+
 	gs_test_init (&argc, &argv);
 
 	/* we can only load this once per process */
@@ -86,8 +90,11 @@ main (int argc, char **argv)
 	g_assert (ret);
 
 	/* plugin tests go here */
-	g_test_add_data_func ("/gnome-software/plugins/fedora-langpacks",
-			      plugin_loader,
-			      (GTestDataFunc) gs_plugins_fedora_langpacks_func);
+	if (!g_file_test ("/run/ostree-booted", G_FILE_TEST_EXISTS)) {
+		g_test_add_data_func ("/gnome-software/plugins/fedora-langpacks",
+				      plugin_loader,
+				      (GTestDataFunc) gs_plugins_fedora_langpacks_func);
+	}
+
 	return g_test_run ();
 }
