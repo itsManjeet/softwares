@@ -21,6 +21,7 @@ gs_plugins_fedora_langpacks_func (GsPluginLoader *plugin_loader)
 	g_autoptr(GError) error = NULL;
 	g_autoptr(GsApp) app = NULL;
 	g_autoptr(GsAppList) list = NULL;
+	g_autoptr(GsAppQuery) query = NULL;
 	g_autoptr(GsPluginJob) plugin_job = NULL;
 	g_autoptr(GsOsRelease) os_release = NULL;
 
@@ -39,10 +40,12 @@ gs_plugins_fedora_langpacks_func (GsPluginLoader *plugin_loader)
 	g_unlink (cachefn);
 
 	/* get langpacks result based on locale */
-	plugin_job = gs_plugin_job_newv (GS_PLUGIN_ACTION_GET_LANGPACKS,
-					 "search", "pt_BR.UTF-8",
-					 "refine-flags", GS_PLUGIN_REFINE_FLAGS_REQUIRE_ICON,
-					 NULL);
+	query = gs_app_query_new ("is-langpack-for-locale", "pt_BR.UTF-8",
+				  "refine-flags", GS_PLUGIN_REFINE_FLAGS_REQUIRE_ICON,
+				  "max-results", 1,
+				  NULL);
+	plugin_job = gs_plugin_job_list_apps_new (query, GS_PLUGIN_LIST_APPS_FLAGS_NONE);
+
 	list = gs_plugin_loader_job_process (plugin_loader, plugin_job, NULL, &error);
 	g_assert_nonnull (list);
 	g_assert_no_error (error);
@@ -64,6 +67,7 @@ main (int argc, char **argv)
 	g_autoptr(GsPluginLoader) plugin_loader = NULL;
 	const gchar * const allowlist[] = {
 		"fedora-langpacks",
+		"packagekit",
 		NULL
 	};
 
@@ -72,6 +76,7 @@ main (int argc, char **argv)
 	/* we can only load this once per process */
 	plugin_loader = gs_plugin_loader_new (NULL, NULL);
 	gs_plugin_loader_add_location (plugin_loader, LOCALPLUGINDIR);
+	gs_plugin_loader_add_location (plugin_loader, LOCALPLUGINDIR_PACKAGEKIT);
 	ret = gs_plugin_loader_setup (plugin_loader,
 				      allowlist,
 				      NULL,
