@@ -159,9 +159,9 @@ unmap_cb (GtkDialog *dialog,
 }
 
 static void
-response_cb (AdwMessageDialog *self,
-             const gchar      *response,
-             RunInfo          *run_info)
+response_cb (AdwAlertDialog *self,
+             const gchar    *response,
+             RunInfo        *run_info)
 {
 	if (g_strcmp0 (response, "accept") == 0)
 		run_info->response_id = GTK_RESPONSE_OK;
@@ -189,10 +189,11 @@ gs_common_app_is_from_official_repository (GsApp *app,
 }
 
 GtkResponseType
-gs_app_notify_unavailable (GsApp *app, GtkWindow *parent)
+gs_app_notify_unavailable (GsApp     *app,
+			   GtkWidget *parent)
 {
 	GsAppLicenseHint hint = GS_APP_LICENSE_FREE;
-	GtkWidget *dialog;
+	AdwDialog *dialog;
 	const gchar *license;
 	gboolean already_enabled = FALSE;	/* FIXME */
 	g_autofree gchar *origin_ui = NULL;
@@ -295,29 +296,27 @@ gs_app_notify_unavailable (GsApp *app, GtkWindow *parent)
 		}
 	}
 
-	dialog = adw_message_dialog_new (parent,
-					 title,
-					 body->str);
-	adw_message_dialog_set_body_use_markup (ADW_MESSAGE_DIALOG (dialog), TRUE);
+	dialog = adw_alert_dialog_new (title, body->str);
+	adw_alert_dialog_set_body_use_markup (ADW_ALERT_DIALOG (dialog), TRUE);
 
-	adw_message_dialog_add_response (ADW_MESSAGE_DIALOG (dialog),
-					 "cancel",  _("_Cancel"));
+	adw_alert_dialog_add_response (ADW_ALERT_DIALOG (dialog),
+				       "cancel",  _("_Cancel"));
 
 	/* TRANSLATORS: this is button text to not ask about non-free content again */
-	if (0) adw_message_dialog_add_response (ADW_MESSAGE_DIALOG (dialog), "dont-warn-again",  _("Don’t _Warn Again"));
+	if (0) adw_alert_dialog_add_response (ADW_ALERT_DIALOG (dialog), "dont-warn-again",  _("Don’t _Warn Again"));
 	if (already_enabled) {
-		adw_message_dialog_add_response (ADW_MESSAGE_DIALOG (dialog),
-						 /* TRANSLATORS: button text */
-						 "install", _("_Install"));
+		adw_alert_dialog_add_response (ADW_ALERT_DIALOG (dialog),
+					       /* TRANSLATORS: button text */
+					       "install", _("_Install"));
 
 	} else {
-		adw_message_dialog_add_response (ADW_MESSAGE_DIALOG (dialog),
-						 /* TRANSLATORS: button text */
-						 "install", _("Enable and _Install"));
+		adw_alert_dialog_add_response (ADW_ALERT_DIALOG (dialog),
+					       /* TRANSLATORS: button text */
+					       "install", _("Enable and _Install"));
 	}
 
 	/* Run */
-	gtk_window_present (GTK_WINDOW (dialog));
+	adw_dialog_present (dialog, parent);
 
 	g_signal_connect (dialog, "response", G_CALLBACK (response_cb), &run_info);
 	g_signal_connect (dialog, "unmap", G_CALLBACK (unmap_cb), &run_info);
@@ -500,19 +499,16 @@ unset_focus (GtkWidget *widget, gpointer data)
  * Inserts a widget displaying the detailed message into the message dialog.
  */
 static void
-insert_details_widget (AdwMessageDialog *dialog,
+insert_details_widget (AdwAlertDialog *dialog,
 		       const gchar *details,
 		       gboolean add_prefix)
 {
-	GtkWidget *box, *sw, *label;
-	GtkWidget *tv;
+	GtkWidget *group, *tv;
 	GtkTextBuffer *buffer;
 	g_autoptr(GString) msg = NULL;
 
-	g_assert (ADW_IS_MESSAGE_DIALOG (dialog));
+	g_assert (ADW_IS_ALERT_DIALOG (dialog));
 	g_assert (details != NULL);
-
-	gtk_window_set_resizable (GTK_WINDOW (dialog), TRUE);
 
 	if (add_prefix) {
 		msg = g_string_new ("");
@@ -524,20 +520,9 @@ insert_details_widget (AdwMessageDialog *dialog,
 					details);
 	}
 
-	box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
-	adw_message_dialog_set_extra_child (ADW_MESSAGE_DIALOG (dialog), box);
-
-	label = gtk_label_new (_("Details"));
-	gtk_widget_set_halign (label, GTK_ALIGN_START);
-	gtk_widget_set_visible (label, TRUE);
-	gtk_box_append (GTK_BOX (box), label);
-
-	sw = gtk_scrolled_window_new ();
-	gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (sw),
-	                                GTK_POLICY_NEVER,
-	                                GTK_POLICY_AUTOMATIC);
-	gtk_scrolled_window_set_min_content_height (GTK_SCROLLED_WINDOW (sw), 150);
-	gtk_widget_set_visible (sw, TRUE);
+	group = adw_preferences_group_new ();
+	adw_preferences_group_set_title (ADW_PREFERENCES_GROUP (group), _("Details"));
+	adw_alert_dialog_set_extra_child (ADW_ALERT_DIALOG (dialog), group);
 
 	tv = gtk_text_view_new ();
 	buffer = gtk_text_view_get_buffer (GTK_TEXT_VIEW (tv));
@@ -545,11 +530,8 @@ insert_details_widget (AdwMessageDialog *dialog,
 	gtk_text_view_set_wrap_mode (GTK_TEXT_VIEW (tv), GTK_WRAP_WORD);
 	gtk_widget_add_css_class (tv, "update-failed-details");
 	gtk_text_buffer_set_text (buffer, msg ? msg->str : details, -1);
-	gtk_widget_set_visible (tv, TRUE);
 
-	gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (sw), tv);
-	gtk_widget_set_vexpand (sw, TRUE);
-	gtk_box_append (GTK_BOX (box), sw);
+	adw_preferences_group_add (ADW_PREFERENCES_GROUP (group), tv);
 
 	g_signal_connect (dialog, "map", G_CALLBACK (unset_focus), NULL);
 }
@@ -564,20 +546,20 @@ insert_details_widget (AdwMessageDialog *dialog,
  * Shows a message dialog for displaying error messages.
  */
 void
-gs_utils_show_error_dialog (GtkWindow *parent,
-                            const gchar *title,
+gs_utils_show_error_dialog (GtkWidget   *parent,
+			    const gchar *title,
                             const gchar *msg,
                             const gchar *details)
 {
-	GtkWidget *dialog;
+	AdwDialog *dialog;
 
-	dialog = adw_message_dialog_new (parent, title, msg);
+	dialog = adw_alert_dialog_new (title, msg);
 	if (details != NULL)
-		insert_details_widget (ADW_MESSAGE_DIALOG (dialog), details, TRUE);
-	adw_message_dialog_add_response (ADW_MESSAGE_DIALOG (dialog),
-					 /* TRANSLATORS: button text */
-					 "close", _("_Close"));
-	gtk_window_present (GTK_WINDOW (dialog));
+		insert_details_widget (ADW_ALERT_DIALOG (dialog), details, TRUE);
+	adw_alert_dialog_add_response (ADW_ALERT_DIALOG (dialog),
+				       /* TRANSLATORS: button text */
+				       "close", _("_Close"));
+	adw_dialog_present (dialog, parent);
 }
 
 #ifndef TESTDATADIR
@@ -598,7 +580,7 @@ copy_error_text_clicked_cb (GtkButton *button,
 
 /**
  * gs_utils_show_error_dialog_simple:
- * @parent: transient parent, or %NULL for none
+ * @parent: a widget within the toplevel, or NULL for none
  * @title: the title the dialog
  * @text: the detailed error text
  *
@@ -717,7 +699,7 @@ gs_utils_show_error_dialog_simple (GtkWindow *parent,
 
 /**
  * gs_utils_ask_user_accepts:
- * @parent: (nullable): modal parent, or %NULL for none
+ * @parent: a widget within the toplevel, or NULL for none
  * @title: the title for the dialog
  * @msg: the message for the dialog
  * @details: (nullable): the detailed error message, or %NULL for none
@@ -730,16 +712,15 @@ gs_utils_show_error_dialog_simple (GtkWindow *parent,
  * Since: 42
  **/
 gboolean
-gs_utils_ask_user_accepts (GtkWindow *parent,
-			   const gchar *title,
-			   const gchar *msg,
-			   const gchar *details,
-			   const gchar *accept_label)
+gs_utils_ask_user_accepts (GtkWidget   *parent,
+                           const gchar *title,
+                           const gchar *msg,
+                           const gchar *details,
+                           const gchar *accept_label)
 {
-	GtkWidget *dialog;
+	AdwDialog *dialog;
 	RunInfo run_info;
 
-	g_return_val_if_fail (parent == NULL || GTK_IS_WINDOW (parent), FALSE);
 	g_return_val_if_fail (title != NULL, FALSE);
 	g_return_val_if_fail (msg != NULL, FALSE);
 
@@ -748,21 +729,21 @@ gs_utils_ask_user_accepts (GtkWindow *parent,
 		accept_label = _("_Accept");
 	}
 
-	dialog = adw_message_dialog_new (parent, title, msg);
+	dialog = adw_alert_dialog_new (title, msg);
 	if (details != NULL)
-		insert_details_widget (ADW_MESSAGE_DIALOG (dialog), details, FALSE);
-	adw_message_dialog_add_responses (ADW_MESSAGE_DIALOG (dialog),
-					  /* TRANSLATORS: button text */
-					  "cancel", _("_Cancel"),
-					  /* TRANSLATORS: button text */
-					  "accept", accept_label,
-					  NULL);
+		insert_details_widget (ADW_ALERT_DIALOG (dialog), details, FALSE);
+	adw_alert_dialog_add_responses (ADW_ALERT_DIALOG (dialog),
+					/* TRANSLATORS: button text */
+					"cancel", _("_Cancel"),
+					/* TRANSLATORS: button text */
+					"accept", accept_label,
+					NULL);
 
 	run_info.response_id = GTK_RESPONSE_NONE;
 	run_info.loop = g_main_loop_new (NULL, FALSE);
 
 	/* Run */
-	gtk_window_present (GTK_WINDOW (dialog));
+	adw_dialog_present (dialog, parent);
 
 	g_signal_connect (dialog, "response", G_CALLBACK (response_cb), &run_info);
 	g_signal_connect (dialog, "unmap", G_CALLBACK (unmap_cb), &run_info);
