@@ -308,6 +308,20 @@ gs_description_box_finalize (GObject *object)
 }
 
 static void
+gs_description_box_state_flags_changed_cb (GsDescriptionBox *box)
+{
+	GtkStateFlags flags = gtk_widget_get_state_flags (GTK_WIDGET (box));
+
+	if (flags == GTK_STATE_FLAG_FOCUS_WITHIN) {
+	  	const char *label = gtk_label_get_label (box->label);
+
+		gtk_accessible_announce (GTK_ACCESSIBLE (box),
+					 label,
+					 GTK_ACCESSIBLE_ANNOUNCEMENT_PRIORITY_MEDIUM);
+	}
+}
+
+static void
 gs_description_box_init (GsDescriptionBox *box)
 {
 	GtkWidget *widget;
@@ -328,7 +342,6 @@ gs_description_box_init (GsDescriptionBox *box)
 		"valign", GTK_ALIGN_START,
 		"visible", TRUE,
 		"max-width-chars", 40,
-		"selectable", TRUE,
 		"wrap", TRUE,
 		"xalign", 0.0,
 		NULL);
@@ -358,6 +371,9 @@ gs_description_box_init (GsDescriptionBox *box)
 
 	g_signal_connect (box->button, "clicked",
 		G_CALLBACK (gs_description_box_read_button_clicked_cb), box);
+
+	g_signal_connect (box, "state-flags-changed",
+		G_CALLBACK (gs_description_box_state_flags_changed_cb), box);
 }
 
 static void
