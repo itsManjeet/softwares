@@ -62,6 +62,8 @@ struct _GsPluginFlatpak
 
 	GCancellable		*purge_cancellable;
 	guint			 purge_timeout_id;
+
+	GPtrArray		*cache_files_to_delete;  /* (element-type GFile) (nullable) */
 };
 
 G_DEFINE_TYPE (GsPluginFlatpak, gs_plugin_flatpak, GS_TYPE_PLUGIN)
@@ -87,6 +89,9 @@ static void
 gs_plugin_flatpak_dispose (GObject *object)
 {
 	GsPluginFlatpak *self = GS_PLUGIN_FLATPAK (object);
+
+	g_assert (self->cache_files_to_delete == NULL || self->cache_files_to_delete->len == 0);
+	g_clear_pointer (&self->cache_files_to_delete, g_ptr_array_unref);
 
 	g_cancellable_cancel (self->purge_cancellable);
 	g_assert (self->purge_timeout_id == 0);
@@ -417,6 +422,16 @@ gs_plugin_flatpak_shutdown_async (GsPlugin            *plugin,
 
 	task = g_task_new (self, cancellable, callback, user_data);
 	g_task_set_source_tag (task, gs_plugin_flatpak_shutdown_async);
+
+	/* Delete any cache files from this session. This should not really
+	 * block, as they’re all local. */
+	for (guint i = 0; self->cache_files_to_delete != NULL && i < self->cache_files_to_delete->len; i++) {
+		GFile *cache_file = g_ptr_array_index (self->cache_files_to_delete, i);
+
+		g_file_delete (cache_file, NULL, NULL);
+	}
+
+	g_clear_pointer (&self->cache_files_to_delete, g_ptr_array_unref);
 
 	/* Stop the worker thread. */
 	gs_worker_thread_shutdown_async (self->worker, cancellable, shutdown_cb, g_steal_pointer (&task));
@@ -2602,6 +2617,19 @@ gs_plugin_flatpak_list_apps_finish (GsPlugin      *plugin,
 }
 
 static void
+async_result_cb (GObject      *source_object,
+                 GAsyncResult *result,
+                 gpointer      user_data)
+{
+	GAsyncResult **result_out = user_data;
+
+	g_assert (*result_out == NULL);
+	*result_out = g_object_ref (result);
+
+	g_main_context_wakeup (g_main_context_get_thread_default ());
+}
+
+static void
 url_to_app_thread_cb (GTask *task,
 		      gpointer source_object,
 		      gpointer task_data,
@@ -2612,6 +2640,77 @@ url_to_app_thread_cb (GTask *task,
 	GsPluginFlatpak *self = GS_PLUGIN_FLATPAK (source_object);
 	GsPluginUrlToAppData *data = task_data;
 	gboolean interactive = (data->flags & GS_PLUGIN_URL_TO_APP_FLAGS_INTERACTIVE) != 0;
+	g_autofree char *scheme = NULL;
+
+	/* Firstly, try and support `flatpak+https` URIs. This needs to be done
+	 * at the #GsPluginFlatpak level rather than the #GsFlatpak level,
+	 * because we need to hand off to the plugin’s file-to-app code.
+	 *
+	 * The flatpak+https URI scheme points towards a .flatpakref file which
+	 * we can download and then treat like a normal local file. This code
+	 * actually also supports the URI pointing at a bundle or a repo file,
+	 * since that also seems sensible to support.
+	 *
+	 * https://gitlab.gnome.org/GNOME/gnome-software/-/issues/2240#note_1787991 */
+	scheme = gs_utils_get_url_scheme (data->url);
+
+	if (g_strcmp0 (scheme, "flatpak+https") == 0) {
+		g_autoptr(GFile) file = NULL;
+		g_autoptr(GsApp) app = NULL;
+		g_autofree gchar *cache_filename = NULL;
+		g_autoptr(GFile) cache_file = NULL;
+		g_autoptr(SoupSession) soup_session = NULL;
+		g_autoptr(GAsyncResult) result = NULL;
+
+		/* Download and cache the file. */
+		cache_filename = gs_utils_get_cache_filename ("flatpak-downloaded-refs",
+							      data->url,
+							      GS_UTILS_CACHE_FLAG_WRITEABLE |
+							      GS_UTILS_CACHE_FLAG_CREATE_DIRECTORY,
+							      &local_error);
+		if (cache_filename == NULL) {
+			g_task_return_error (task, g_steal_pointer (&local_error));
+			return;
+		}
+
+		cache_file = g_file_new_for_path (cache_filename);
+		soup_session = gs_build_soup_session ();
+		if (self->cache_files_to_delete == NULL)
+			self->cache_files_to_delete = g_ptr_array_new_with_free_func ((GDestroyNotify) g_object_unref);
+		g_ptr_array_add (self->cache_files_to_delete, g_object_ref (cache_file));
+
+		gs_download_file_async (soup_session,
+					data->url + strlen ("flatpak+"),
+					cache_file,
+					G_PRIORITY_DEFAULT,
+					NULL, NULL,  /* progress */
+					cancellable,
+					async_result_cb,
+					&result);
+
+		while (result == NULL)
+			g_main_context_iteration (g_main_context_get_thread_default (), TRUE);
+
+		if (!gs_download_file_finish (soup_session, result, &local_error) &&
+		    !g_error_matches (local_error, GS_DOWNLOAD_ERROR, GS_DOWNLOAD_ERROR_NOT_MODIFIED)) {
+			g_task_return_error (task, g_steal_pointer (&local_error));
+			return;
+		}
+
+		g_clear_error (&local_error);
+
+		/* Now load and display the downloaded flatpakref file. */
+		app = gs_plugin_flatpak_file_to_app (self, cache_file, interactive, NULL, cancellable, &local_error);
+
+		if (app != NULL) {
+			gs_app_list_add (list, app);
+			g_task_return_pointer (task, g_steal_pointer (&list), g_object_unref);
+		} else {
+			g_task_return_error (task, g_steal_pointer (&local_error));
+		}
+
+		return;
+	}
 
 	for (guint i = 0; i < self->installations->len; i++) {
 		GsFlatpak *flatpak = g_ptr_array_index (self->installations, i);
