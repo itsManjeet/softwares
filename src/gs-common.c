@@ -503,7 +503,8 @@ insert_details_widget (AdwAlertDialog *dialog,
 		       const gchar *details,
 		       gboolean add_prefix)
 {
-	GtkWidget *group, *tv;
+	GtkWidget *box, *sw, *label;
+	GtkWidget *tv;
 	GtkTextBuffer *buffer;
 	g_autoptr(GString) msg = NULL;
 
@@ -520,9 +521,20 @@ insert_details_widget (AdwAlertDialog *dialog,
 					details);
 	}
 
-	group = adw_preferences_group_new ();
-	adw_preferences_group_set_title (ADW_PREFERENCES_GROUP (group), _("Details"));
-	adw_alert_dialog_set_extra_child (ADW_ALERT_DIALOG (dialog), group);
+	box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+	adw_alert_dialog_set_extra_child (ADW_ALERT_DIALOG (dialog), box);
+
+	label = gtk_label_new (_("Details"));
+	gtk_widget_set_halign (label, GTK_ALIGN_START);
+	gtk_widget_set_visible (label, TRUE);
+	gtk_box_append (GTK_BOX (box), label);
+
+	sw = gtk_scrolled_window_new ();
+	gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (sw),
+	                                GTK_POLICY_NEVER,
+	                                GTK_POLICY_AUTOMATIC);
+	gtk_scrolled_window_set_min_content_height (GTK_SCROLLED_WINDOW (sw), 150);
+	gtk_widget_set_visible (sw, TRUE);
 
 	tv = gtk_text_view_new ();
 	buffer = gtk_text_view_get_buffer (GTK_TEXT_VIEW (tv));
@@ -530,8 +542,11 @@ insert_details_widget (AdwAlertDialog *dialog,
 	gtk_text_view_set_wrap_mode (GTK_TEXT_VIEW (tv), GTK_WRAP_WORD);
 	gtk_widget_add_css_class (tv, "update-failed-details");
 	gtk_text_buffer_set_text (buffer, msg ? msg->str : details, -1);
+	gtk_widget_set_visible (tv, TRUE);
 
-	adw_preferences_group_add (ADW_PREFERENCES_GROUP (group), tv);
+	gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (sw), tv);
+	gtk_widget_set_vexpand (sw, TRUE);
+	gtk_box_append (GTK_BOX (box), sw);
 
 	g_signal_connect (dialog, "map", G_CALLBACK (unset_focus), NULL);
 }
