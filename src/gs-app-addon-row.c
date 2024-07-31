@@ -13,21 +13,19 @@
 #include <glib/gi18n.h>
 
 #include "gs-app-addon-row.h"
+#include "gs-progress-button.h"
 
 struct _GsAppAddonRow
 {
-	GtkListBoxRow	 parent_instance;
+	AdwActionRow	 parent_instance;
 
 	GsApp		*app;
-	GtkWidget	*name_label;
-	GtkWidget	*description_label;
-	GtkWidget	*label;
 	GtkWidget	*buttons_stack;
 	GtkWidget	*button_install;
 	GtkWidget	*button_remove;
 };
 
-G_DEFINE_TYPE (GsAppAddonRow, gs_app_addon_row, GTK_TYPE_LIST_BOX_ROW)
+G_DEFINE_TYPE (GsAppAddonRow, gs_app_addon_row, ADW_TYPE_ACTION_ROW)
 
 enum {
 	SIGNAL_INSTALL_BUTTON_CLICKED,
@@ -84,38 +82,51 @@ gs_app_addon_row_refresh (GsAppAddonRow *row)
 	/* join the lines */
 	str = gs_app_addon_row_get_summary (row);
 	gs_utils_gstring_replace (str, "\n", " ");
-	gtk_label_set_markup (GTK_LABEL (row->description_label), str->str);
-	gtk_label_set_label (GTK_LABEL (row->name_label),
-			     gs_app_get_name (row->app));
+	adw_action_row_set_subtitle (ADW_ACTION_ROW (row), str->str);
+	adw_preferences_row_set_title (ADW_PREFERENCES_ROW (row),
+				       gs_app_get_name (row->app));
 
 	/* update the state label */
 	switch (gs_app_get_state (row->app)) {
 	case GS_APP_STATE_QUEUED_FOR_INSTALL:
-		gtk_widget_set_visible (row->label, TRUE);
-		gtk_label_set_label (GTK_LABEL (row->label), _("Pending"));
+		gtk_button_set_label (GTK_BUTTON (row->button_install), _("Pending"));
+		gs_progress_button_set_show_progress (GS_PROGRESS_BUTTON (row->button_install), TRUE);
+		gs_progress_button_set_progress (GS_PROGRESS_BUTTON (row->button_install),
+						 gs_app_get_state (row->app));
 		break;
 	case GS_APP_STATE_PENDING_INSTALL:
-		gtk_widget_set_visible (row->label, TRUE);
-		gtk_label_set_label (GTK_LABEL (row->label), _("Pending install"));
+		gtk_button_set_label (GTK_BUTTON (row->button_install), _("Pending install"));
+		gs_progress_button_set_show_progress (GS_PROGRESS_BUTTON (row->button_install), TRUE);
+		gs_progress_button_set_progress (GS_PROGRESS_BUTTON (row->button_install),
+						 gs_app_get_state (row->app));
 		break;
 	case GS_APP_STATE_PENDING_REMOVE:
-		gtk_widget_set_visible (row->label, TRUE);
-		gtk_label_set_label (GTK_LABEL (row->label), _("Pending remove"));
+		gtk_button_set_label (GTK_BUTTON (row->button_remove), _("Pending remove"));
+		gs_progress_button_set_show_progress (GS_PROGRESS_BUTTON (row->button_remove), TRUE);
+		gs_progress_button_set_progress (GS_PROGRESS_BUTTON (row->button_remove),
+						 gs_app_get_state (row->app));
 		break;
 	case GS_APP_STATE_INSTALLING:
-		gtk_widget_set_visible (row->label, TRUE);
-		gtk_label_set_label (GTK_LABEL (row->label), _("Installing"));
+		gtk_button_set_label (GTK_BUTTON (row->button_install), _("Installing"));
+		gs_progress_button_set_show_progress (GS_PROGRESS_BUTTON (row->button_install), TRUE);
+		gs_progress_button_set_progress (GS_PROGRESS_BUTTON (row->button_install),
+						 gs_app_get_state (row->app));
 		break;
 	case GS_APP_STATE_REMOVING:
-		gtk_widget_set_visible (row->label, TRUE);
-		gtk_label_set_label (GTK_LABEL (row->label), _("Removing"));
+		gtk_button_set_label (GTK_BUTTON (row->button_remove), _("Removing"));
+		gs_progress_button_set_show_progress (GS_PROGRESS_BUTTON (row->button_remove), TRUE);
+		gs_progress_button_set_progress (GS_PROGRESS_BUTTON (row->button_remove),
+						 gs_app_get_state (row->app));
 		break;
 	case GS_APP_STATE_DOWNLOADING:
-		gtk_widget_set_visible (row->label, TRUE);
-		gtk_label_set_label (GTK_LABEL (row->label), _("Downloading"));
+		gtk_button_set_label (GTK_BUTTON (row->button_install), _("Downloading"));
+		gs_progress_button_set_show_progress (GS_PROGRESS_BUTTON (row->button_install), TRUE);
+		gs_progress_button_set_progress (GS_PROGRESS_BUTTON (row->button_install),
+						 gs_app_get_state (row->app));
 		break;
 	default:
-		gtk_widget_set_visible (row->label, FALSE);
+		gs_progress_button_set_show_progress (GS_PROGRESS_BUTTON (row->button_install), FALSE);
+		gs_progress_button_set_show_progress (GS_PROGRESS_BUTTON (row->button_remove), FALSE);
 		break;
 	}
 
@@ -236,9 +247,6 @@ gs_app_addon_row_class_init (GsAppAddonRowClass *klass)
 
 	gtk_widget_class_set_template_from_resource (widget_class, "/org/gnome/Software/gs-app-addon-row.ui");
 
-	gtk_widget_class_bind_template_child (widget_class, GsAppAddonRow, name_label);
-	gtk_widget_class_bind_template_child (widget_class, GsAppAddonRow, description_label);
-	gtk_widget_class_bind_template_child (widget_class, GsAppAddonRow, label);
 	gtk_widget_class_bind_template_child (widget_class, GsAppAddonRow, buttons_stack);
 	gtk_widget_class_bind_template_child (widget_class, GsAppAddonRow, button_install);
 	gtk_widget_class_bind_template_child (widget_class, GsAppAddonRow, button_remove);
