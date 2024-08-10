@@ -1709,7 +1709,6 @@ gs_plugin_app_upgrade_trigger (GsPlugin *plugin,
 	/* trigger the upgrade */
 	options = make_rpmostree_options_variant (RPMOSTREE_OPTION_ALLOW_DOWNGRADE |
 	                                          RPMOSTREE_OPTION_CACHE_ONLY);
-
 	done = FALSE;
 	while (!done) {
 		done = TRUE;
