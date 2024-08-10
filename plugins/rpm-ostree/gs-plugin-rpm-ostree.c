@@ -1542,19 +1542,28 @@ update_apps_thread_cb (GTask        *task,
 	if (!(data->flags & GS_PLUGIN_UPDATE_APPS_FLAGS_NO_DOWNLOAD)) {
 		GsPlugin *plugin = GS_PLUGIN (self);
 		g_autofree gchar *transaction_address = NULL;
+		g_autoptr(GSettings) settings = NULL;
 		g_autoptr(GVariant) options = NULL;
 		g_autoptr(TransactionProgress) tp = transaction_progress_new ();
 		gboolean done;
+		gboolean download_only;
 
 		if (!gs_rpmostree_wait_for_ongoing_transaction_end (sysroot_proxy, cancellable, &local_error)) {
 			g_task_return_error (task, g_steal_pointer (&local_error));
 			return;
 		}
 
+		settings = g_settings_new ("org.gnome.software");
+		/* in rpm-ostree, when automatic updates are on, the download_only is off,
+		   to immediately install the updates, not only download them, thus the next
+		   machine restart applies the update. */
+		download_only = !g_settings_get_boolean (settings, "download-updates");
+
+
 		tp->download_progress_list = g_object_ref (data->apps);
 		tp->plugin = g_object_ref (plugin);
 
-		options = make_rpmostree_options_variant (RPMOSTREE_OPTION_DOWNLOAD_ONLY);
+		options = make_rpmostree_options_variant (download_only ? RPMOSTREE_OPTION_DOWNLOAD_ONLY : RPMOSTREE_OPTION_NONE);
 		done = FALSE;
 		while (!done) {
 			done = TRUE;
@@ -1700,6 +1709,7 @@ gs_plugin_app_upgrade_trigger (GsPlugin *plugin,
 	/* trigger the upgrade */
 	options = make_rpmostree_options_variant (RPMOSTREE_OPTION_ALLOW_DOWNGRADE |
 	                                          RPMOSTREE_OPTION_CACHE_ONLY);
+
 	done = FALSE;
 	while (!done) {
 		done = TRUE;
