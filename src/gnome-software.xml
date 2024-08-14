@@ -50,7 +50,7 @@
     <variablelist>
       <varlistentry>
         <term><option>--mode</option>=<replaceable>MODE</replaceable></term>
-        <listitem><para>Start gnome-software in the given mode. <replaceable>MODE</replaceable> can be 'updates', 'updated', 'installed' or 'overview'. The default mode is 'overview'.</para></listitem>
+        <listitem><para>Start gnome-software in the given mode. <replaceable>MODE</replaceable> can be <literal>updates</literal>, <literal>updated</literal>, <literal>installed</literal> or <literal>overview</literal>. The default mode is <literal>overview</literal>.</para></listitem>
       </varlistentry>
       <varlistentry>
         <term><option>--search</option>=<replaceable>SEARCH</replaceable></term>
@@ -78,7 +78,7 @@
       </varlistentry>
       <varlistentry>
         <term><option>--interaction</option>=<replaceable>INTERACTION</replaceable></term>
-        <listitem><para>The kind of interaction expected for this action: either ‘none’, ‘notify’, or ‘full’.</para></listitem>
+        <listitem><para>The kind of interaction expected for this action: either <literal>none</literal>, <literal>notify</literal>, or <literal>full</literal>.</para></listitem>
       </varlistentry>
       <varlistentry>
         <term><option>--show-metainfo</option>=<replaceable>FILENAME</replaceable></term>
@@ -119,7 +119,7 @@
   <refsect1>
     <title>Bugs</title>
     <para>The bug tracker can be reached by visiting the website
-    https://gitlab.gnome.org/GNOME/gnome-software/issues.
+    <ulink url="https://gitlab.gnome.org/GNOME/gnome-software/issues"/>.
     </para>
   </refsect1>
 
