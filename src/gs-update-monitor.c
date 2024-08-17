@@ -64,6 +64,7 @@ struct _GsUpdateMonitor {
 	gint64		 last_notification_time_usec;	/* to notify once per day only */
 	gint64		 last_get_updates;		/* used when automatic updates are off */
 	gint		 randomized_hour;		/* to avoid all clients checking at same small interval */
+	gboolean	 can_download_updates;
 };
 
 G_DEFINE_TYPE (GsUpdateMonitor, gs_update_monitor, G_TYPE_OBJECT)
@@ -182,6 +183,9 @@ check_if_timestamp_more_than_days_ago (GsUpdateMonitor *monitor, const gchar *ti
 static gboolean
 should_download_updates (GsUpdateMonitor *monitor)
 {
+	if (!monitor->can_download_updates)
+		return FALSE;
+
 #ifdef HAVE_MOGWAI
 	return TRUE;
 #else
@@ -207,9 +211,10 @@ should_notify_about_pending_updates (GsUpdateMonitor *monitor,
 	}
 
 	should_download = should_download_updates (monitor);
-	check_updates_kind (apps, &has_important, &all_downloaded, &any_downloaded);
+	if (apps != NULL)
+		check_updates_kind (apps, &has_important, &all_downloaded, &any_downloaded);
 
-	if (!gs_app_list_length (apps)) {
+	if (apps == NULL || !gs_app_list_length (apps)) {
 		/* Notify only when the download is disabled and it's the 4th day or it's more than 7 days */
 		if (!should_download && (timestamp_days >= 7 || timestamp_days == 4)) {
 			*out_title = _("Updates Are Out of Date");
@@ -244,7 +249,7 @@ should_notify_about_pending_updates (GsUpdateMonitor *monitor,
 
 	g_debug ("%s: last_test_days:%" G_GINT64_FORMAT " n-apps:%u should_download:%d has_important:%d "
 		"all_downloaded:%d any_downloaded:%d res:%d%s%s%s%s", G_STRFUNC,
-		timestamp_days, gs_app_list_length (apps), should_download, has_important,
+		timestamp_days, apps == NULL ? 0 : gs_app_list_length (apps), should_download, has_important,
 		all_downloaded, any_downloaded, res,
 		res ? " reason:" : "",
 		res ? *out_title : "",
@@ -299,8 +304,8 @@ notify_about_pending_updates (GsUpdateMonitor *monitor,
 
 	/* Keep the old notification time when there are no updates and the update download is disabled,
 	   to notify the user every day after 7 days of no update check */
-	if (gs_app_list_length (apps) ||
-	    should_download_updates (monitor))
+	if (apps != NULL && (gs_app_list_length (apps) > 0 ||
+	    should_download_updates (monitor)))
 		reset_update_notification_timestamp (monitor);
 }
 
@@ -547,8 +552,10 @@ get_updates_finished_cb (GObject *object, GAsyncResult *res, gpointer user_data)
 	apps = gs_plugin_loader_job_process_finish (GS_PLUGIN_LOADER (object), res, &error);
 	if (apps == NULL) {
 		if (!g_error_matches (error, GS_PLUGIN_ERROR, GS_PLUGIN_ERROR_CANCELLED) &&
-		    !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+		    !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
 			g_warning ("failed to get updates: %s", error->message);
+			notify_about_pending_updates (monitor, NULL);
+		}
 		return;
 	}
 
@@ -973,17 +980,26 @@ get_midnight (GDateTime *datetime)
 static void
 check_updates (GsUpdateMonitor *monitor)
 {
+	gboolean can_download_updates;
 	gint64 tmp;
-	gboolean refresh_on_metered;
 	g_autoptr(GDateTime) last_refreshed = NULL;
 	g_autoptr(GsPluginJob) plugin_job = NULL;
 
-	/* never check for updates when offline */
-	if (!gs_plugin_loader_get_network_available (monitor->plugin_loader))
-		return;
-
-	/* check for language pack */
-	check_language_pack (monitor);
+	/* never refresh when the battery is low */
+	if (monitor->proxy_upower != NULL) {
+		g_autoptr(GVariant) val = NULL;
+		val = g_dbus_proxy_get_cached_property (monitor->proxy_upower,
+							"WarningLevel");
+		if (val != NULL) {
+			guint32 level = g_variant_get_uint32 (val);
+			if (level >= UP_DEVICE_LEVEL_LOW) {
+				g_debug ("not getting updates on low power");
+				return;
+			}
+		}
+	} else {
+		g_debug ("no UPower support, so not doing power level checks");
+	}
 
 	g_settings_get (monitor->settings, "check-timestamp", "x", &tmp);
 	last_refreshed = g_date_time_new_from_unix_local (tmp);
@@ -1004,61 +1020,74 @@ check_updates (GsUpdateMonitor *monitor)
 		day_interval = g_date_time_difference (now_midnight, last_refreshed_midnight);
 
 		/* check that it is the next day */
-		if (day_interval < G_TIME_SPAN_DAY)
+		if (day_interval < G_TIME_SPAN_DAY) {
+			g_debug ("Not getting updates, did so not more than a day ago");
 			return;
+		}
 
 		/* ...and past 6-11am (with randomized hour), if interval is within 2 days */
-		if (day_interval < 2 * G_TIME_SPAN_DAY && !(now_hour >= 6 + monitor->randomized_hour))
+		if (day_interval < 2 * G_TIME_SPAN_DAY && !(now_hour >= 6 + monitor->randomized_hour)) {
+			g_debug ("Not getting updates, it's too early");
 			return;
+		}
 
 		/* or the update has been delayed another day
 		 * randomized_hour should not be used in this case
 		 */
-		if (day_interval >= 2 * G_TIME_SPAN_DAY && !(now_hour >= 6))
+		if (day_interval >= 2 * G_TIME_SPAN_DAY && !(now_hour >= 6)) {
+			g_debug ("Not getting updates, it's before 6 am");
 			return;
+		}
 	}
+
+	/* never check for updates when offline */
+	can_download_updates = gs_plugin_loader_get_network_available (monitor->plugin_loader);
+
+	if (!can_download_updates)
+		g_debug ("Not getting updates without network");
+
+	if (can_download_updates) {
+		gboolean refresh_on_metered;
 
 #ifdef HAVE_MOGWAI
-	refresh_on_metered = TRUE;
+		refresh_on_metered = TRUE;
 #else
-	refresh_on_metered = g_settings_get_boolean (monitor->settings,
-						     "refresh-when-metered");
+		refresh_on_metered = g_settings_get_boolean (monitor->settings,
+							     "refresh-when-metered");
 #endif
 
-	if (!refresh_on_metered &&
-	    gs_plugin_loader_get_network_metered (monitor->plugin_loader))
-		return;
-
-	/* never refresh when the battery is low */
-	if (monitor->proxy_upower != NULL) {
-		g_autoptr(GVariant) val = NULL;
-		val = g_dbus_proxy_get_cached_property (monitor->proxy_upower,
-							"WarningLevel");
-		if (val != NULL) {
-			guint32 level = g_variant_get_uint32 (val);
-			if (level >= UP_DEVICE_LEVEL_LOW) {
-				g_debug ("not getting updates on low power");
-				return;
-			}
+		if (!refresh_on_metered &&
+		    gs_plugin_loader_get_network_metered (monitor->plugin_loader)) {
+			g_debug ("Not getting updates on metered network");
+			can_download_updates = FALSE;
 		}
-	} else {
-		g_debug ("no UPower support, so not doing power level checks");
 	}
 
-	/* never refresh when in power saver mode */
-	if (gs_plugin_loader_get_power_saver (monitor->plugin_loader)) {
-		g_debug ("Not getting updates with power saver enabled");
-		return;
-	} else if (monitor->power_profile_monitor == NULL) {
-		g_debug ("No power profile monitor support, so not doing power profile checks");
+	if (can_download_updates) {
+		/* never refresh when in power saver mode */
+		if (gs_plugin_loader_get_power_saver (monitor->plugin_loader)) {
+			g_debug ("Not getting updates with power saver enabled");
+			can_download_updates = FALSE;
+		} else if (monitor->power_profile_monitor == NULL) {
+			g_debug ("No power profile monitor support, so not doing power profile checks");
+		}
 	}
 
-	if (gs_plugin_loader_get_game_mode (monitor->plugin_loader)) {
-		g_debug ("Not getting updates with enabled GameMode");
-		return;
+	if (can_download_updates) {
+		if (gs_plugin_loader_get_game_mode (monitor->plugin_loader)) {
+			g_debug ("Not getting updates with enabled GameMode");
+			can_download_updates = FALSE;
+		}
 	}
 
-	if (!should_download_updates (monitor)) {
+	if (can_download_updates) {
+		/* check for language pack */
+		check_language_pack (monitor);
+	}
+
+	monitor->can_download_updates = can_download_updates;
+
+	if (!can_download_updates || !should_download_updates (monitor)) {
 		gint64 now_secs;
 
 		/* cannot update "check-timestamp", because it corresponds
