@@ -18,7 +18,7 @@
                   <class name="view"/>
                 </style>
                 <child>
-                  <object class="GtkOverlay">
+                  <object class="GtkOverlay" id="test_overlay">
                     <child>
                       <object class="AdwCarousel" id="carousel">
                         <property name="vexpand">True</property>

@@ -427,6 +427,7 @@
 
                             <child>
                               <object class="GsScreenshotCarousel" id="screenshot_carousel">
+                                <property name="state">normal</property>
                               </object>
                             </child>
 
@@ -1200,6 +1201,17 @@
                     </child>
                   </object>
                 </child>
+              </object>
+            </property>
+          </object>
+        </child>
+
+        <child>
+          <object class="GtkStackPage">
+            <property name="name">screenshot-viewer</property>
+            <property name="child">
+              <object class="GsScreenshotCarousel" id="viewer_screenshot_carousel">
+                <property name="state">large</property>
               </object>
             </property>
           </object>

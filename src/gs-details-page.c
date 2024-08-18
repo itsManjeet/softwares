@@ -80,6 +80,7 @@ static void gs_details_page_app_refine_cb (GObject *source, GAsyncResult *res, g
 typedef enum {
 	GS_DETAILS_PAGE_STATE_LOADING,
 	GS_DETAILS_PAGE_STATE_READY,
+	GS_DETAILS_PAGE_STATE_SCREENSHOT_VIEWER,
 	GS_DETAILS_PAGE_STATE_FAILED
 } GsDetailsPageState;
 
@@ -121,6 +122,7 @@ struct _GsDetailsPage
 	GtkWidget		*star;
 	GtkWidget		*label_review_count;
 	GtkWidget		*screenshot_carousel;
+	GtkWidget		*viewer_screenshot_carousel;
 	GtkWidget		*button_details_launch;
 	GtkStack		*links_stack;
 	GtkWidget		*label_no_metadata_info;
@@ -190,11 +192,12 @@ enum {
 typedef enum {
 	PROP_ODRS_PROVIDER = 1,
 	PROP_IS_NARROW,
+	PROP_VIEWER_TOP_BAR_VISIBLE,
 	/* Override properties: */
 	PROP_TITLE,
 } GsDetailsPageProperty;
 
-static GParamSpec *obj_props[PROP_IS_NARROW + 1] = { NULL, };
+static GParamSpec *obj_props[PROP_VIEWER_TOP_BAR_VISIBLE + 1] = { NULL, };
 static guint signals[SIGNAL_LAST] = { 0 };
 
 static void
@@ -216,6 +219,8 @@ gs_details_page_get_state (GsDetailsPage *self)
 		return GS_DETAILS_PAGE_STATE_LOADING;
 	else if (g_str_equal (visible_child_name, "ready"))
 		return GS_DETAILS_PAGE_STATE_READY;
+	else if (g_str_equal (visible_child_name, "screenshot-viewer"))
+		return GS_DETAILS_PAGE_STATE_SCREENSHOT_VIEWER;
 	else if (g_str_equal (visible_child_name, "failed"))
 		return GS_DETAILS_PAGE_STATE_FAILED;
 	else
@@ -235,6 +240,7 @@ gs_details_page_set_state (GsDetailsPage *self,
 		gtk_spinner_start (GTK_SPINNER (self->spinner_details));
 		break;
 	case GS_DETAILS_PAGE_STATE_READY:
+	case GS_DETAILS_PAGE_STATE_SCREENSHOT_VIEWER:
 	case GS_DETAILS_PAGE_STATE_FAILED:
 		gtk_spinner_stop (GTK_SPINNER (self->spinner_details));
 		break;
@@ -249,6 +255,9 @@ gs_details_page_set_state (GsDetailsPage *self,
 		break;
 	case GS_DETAILS_PAGE_STATE_READY:
 		gtk_stack_set_visible_child_name (GTK_STACK (self->stack_details), "ready");
+		break;
+	case GS_DETAILS_PAGE_STATE_SCREENSHOT_VIEWER:
+		gtk_stack_set_visible_child_name (GTK_STACK (self->stack_details), "screenshot-viewer");
 		break;
 	case GS_DETAILS_PAGE_STATE_FAILED:
 		gtk_stack_set_visible_child_name (GTK_STACK (self->stack_details), "failed");
@@ -787,10 +796,13 @@ gs_details_page_refresh_screenshots (GsDetailsPage *self)
 		gboolean has_screenshots;
 
 		gs_screenshot_carousel_load_screenshots (GS_SCREENSHOT_CAROUSEL (self->screenshot_carousel), self->app, is_online, NULL);
+		gs_screenshot_carousel_load_screenshots (GS_SCREENSHOT_CAROUSEL (self->viewer_screenshot_carousel), self->app, is_online, NULL);
 		has_screenshots = gs_screenshot_carousel_get_has_screenshots (GS_SCREENSHOT_CAROUSEL (self->screenshot_carousel));
 		gtk_widget_set_visible (self->screenshot_carousel, has_screenshots);
+		gtk_widget_set_visible (self->viewer_screenshot_carousel, has_screenshots);
 	} else {
 		gtk_widget_set_visible (self->screenshot_carousel, FALSE);
+		gtk_widget_set_visible (self->viewer_screenshot_carousel, FALSE);
 	}
 }
 
@@ -2415,6 +2427,24 @@ gs_details_page_review_send_cb (GsReviewDialog *dialog,
 }
 
 static void
+gs_details_page_screenshot_carousel_clicked_cb (GtkWidget *widget,
+						GsDetailsPage *self)
+{
+	g_print ("Signal GsScreenshotCarousel::screenshot-clicked received\n");
+	gs_details_page_set_state (self, GS_DETAILS_PAGE_STATE_SCREENSHOT_VIEWER);
+	return;
+}
+
+static void
+gs_details_page_screenshot_carousel_background_clicked_cb (GtkWidget     *widget,
+                                                           GsDetailsPage *self)
+{
+	g_print ("Signal GsScreenshotCarousel::background-clicked received\n");
+	gs_details_page_set_state (self, GS_DETAILS_PAGE_STATE_READY);
+	return;
+}
+
+static void
 gs_details_page_write_review (GsDetailsPage *self)
 {
 	GtkWidget *dialog;
@@ -2503,6 +2533,11 @@ gs_details_page_setup (GsPage *page,
 	self->cancellable = g_cancellable_new ();
 	g_cancellable_connect (cancellable, G_CALLBACK (gs_details_page_cancel_cb), self, NULL);
 
+	/* g_signal_connect (self->screenshot_viewer_eventbox, "button-press-event", */
+	/* 	  G_CALLBACK (gs_details_page_screenshot_viewer_background_pressed_cb), */
+	/* 	  self); */
+
+
 	g_signal_connect_object (self->shell, "notify::allocation-width",
 				 G_CALLBACK (gs_details_page_shell_allocation_width_cb),
 				 self, 0);
@@ -2542,6 +2577,9 @@ gs_details_page_get_property (GObject    *object,
 				g_value_set_string (value, gs_app_get_name (self->app));
 			else
 				g_value_set_string (value, NULL);
+			break;
+		case GS_DETAILS_PAGE_STATE_SCREENSHOT_VIEWER:
+			g_value_set_string (value, gs_app_get_name (self->app));
 			break;
 		case GS_DETAILS_PAGE_STATE_FAILED:
 			g_value_set_string (value, NULL);
@@ -2658,6 +2696,19 @@ gs_details_page_class_init (GsDetailsPageClass *klass)
 				      FALSE,
 				      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY);
 
+
+	/**
+	 * GsDetailsPage:viewer-top-bar-visible:
+	 *
+	 * Whether the top bar should be visible.
+	 *
+	 * Since: 47
+	 */
+	obj_props[PROP_VIEWER_TOP_BAR_VISIBLE] =
+		g_param_spec_boolean ("viewer-top-bar-visible", NULL, NULL,
+				      TRUE,
+				      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY);
+
 	g_object_class_install_properties (object_class, G_N_ELEMENTS (obj_props), obj_props);
 
 	g_object_class_override_property (object_class, PROP_TITLE, "title");
@@ -2706,6 +2757,7 @@ gs_details_page_class_init (GsDetailsPageClass *klass)
 	gtk_widget_class_bind_template_child (widget_class, GsDetailsPage, star);
 	gtk_widget_class_bind_template_child (widget_class, GsDetailsPage, label_review_count);
 	gtk_widget_class_bind_template_child (widget_class, GsDetailsPage, screenshot_carousel);
+	gtk_widget_class_bind_template_child (widget_class, GsDetailsPage, viewer_screenshot_carousel);
 	gtk_widget_class_bind_template_child (widget_class, GsDetailsPage, button_details_launch);
 	gtk_widget_class_bind_template_child (widget_class, GsDetailsPage, links_stack);
 	gtk_widget_class_bind_template_child (widget_class, GsDetailsPage, label_no_metadata_info);
@@ -2857,6 +2909,12 @@ gs_details_page_init (GsDetailsPage *self)
 
 	g_signal_connect (self->list_box_featured_review, "row-activated",
 			  G_CALLBACK (featured_review_list_row_activated_cb), self);
+
+	g_signal_connect (self->screenshot_carousel, "screenshot-clicked",
+			  G_CALLBACK (gs_details_page_screenshot_carousel_clicked_cb), self);
+
+	g_signal_connect (self->viewer_screenshot_carousel, "background-clicked",
+			  G_CALLBACK (gs_details_page_screenshot_carousel_background_clicked_cb), self);
 
 	gs_details_page_read_packaging_format_preference (self);
 

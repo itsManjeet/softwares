@@ -46,6 +46,7 @@ G_DEFINE_TYPE (GsScreenshotImage, gs_screenshot_image, GTK_TYPE_WIDGET)
 
 enum {
 	SIGNAL_CLICKED,
+	SIGNAL_BACKGROUND_CLICKED,
 	SIGNAL_LAST
 };
 
@@ -503,6 +504,18 @@ gs_screenshot_image_set_size (GsScreenshotImage *ssimg,
 	gtk_widget_set_size_request (ssimg->stack, -1, (gint) height);
 }
 
+void
+gs_screenshot_image_resize (GsScreenshotImage *ssimg,
+                            guint              width,
+                            guint              height)
+{
+	g_return_if_fail (GS_IS_SCREENSHOT_IMAGE (ssimg));
+	g_return_if_fail (width != 0);
+	g_return_if_fail (height != 0);
+
+
+}
+
 static gchar *
 gs_screenshot_get_cachefn_for_url (const gchar *url)
 {
@@ -915,7 +928,7 @@ gs_screenshot_image_init (GsScreenshotImage *ssimg)
 	gesture = gtk_gesture_click_new ();
 	g_signal_connect_object (gesture, "released",
 		G_CALLBACK (gs_screenshot_image_clicked_cb), ssimg, 0);
-	gtk_widget_add_controller (GTK_WIDGET (ssimg), GTK_EVENT_CONTROLLER (gesture));
+	gtk_widget_add_controller (GTK_WIDGET (ssimg->image1), GTK_EVENT_CONTROLLER (gesture));
 }
 
 static void
